@@ -41,6 +41,11 @@ export function ChatPanel() {
 
   // Load conversations & resume last on mount
   useEffect(() => {
+    const pendingPrompt = sessionStorage.getItem("cisco_pending_prompt");
+    if (pendingPrompt) {
+      sessionStorage.removeItem("cisco_pending_prompt");
+      setInput(pendingPrompt);
+    }
     (async () => {
       try {
         const { data: { user } } = await supabase.auth.getUser();

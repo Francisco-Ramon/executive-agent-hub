@@ -47,59 +47,58 @@
 :root {
   --radius: 0.875rem;
 
-  /* Deep midnight base with violet-magenta accent */
-  --background: oklch(0.16 0.02 290);
-  --foreground: oklch(0.96 0.01 290);
+  /* Exact Mr. Cisco Executive Agent palette */
+  --background: #090812;
+  --foreground: #F7F4FC;
 
-  --card: oklch(0.205 0.025 290);
-  --card-foreground: oklch(0.96 0.01 290);
+  --card: #151322;
+  --card-foreground: #F7F4FC;
 
-  --popover: oklch(0.205 0.025 290);
-  --popover-foreground: oklch(0.96 0.01 290);
+  --popover: #151322;
+  --popover-foreground: #F7F4FC;
 
-  /* Brand: rich violet matching the Mr. Cisco logo */
-  --primary: oklch(0.66 0.21 320);
-  --primary-foreground: oklch(0.99 0 0);
-  --primary-glow: oklch(0.78 0.18 310);
-  --primary-deep: oklch(0.42 0.18 340);
+  --primary: #A020F0;
+  --primary-foreground: #F7F4FC;
+  --primary-glow: #C13BFF;
+  --primary-deep: #743BDA;
 
-  --secondary: oklch(0.27 0.04 290);
-  --secondary-foreground: oklch(0.95 0.01 290);
+  --secondary: #1B172A;
+  --secondary-foreground: #F7F4FC;
 
-  --muted: oklch(0.24 0.03 290);
-  --muted-foreground: oklch(0.68 0.03 290);
+  --muted: #1B172A;
+  --muted-foreground: #A6A0B7;
 
-  --accent: oklch(0.32 0.07 320);
-  --accent-foreground: oklch(0.97 0.01 290);
+  --accent: #1B172A;
+  --accent-foreground: #F7F4FC;
 
-  --destructive: oklch(0.62 0.22 25);
-  --destructive-foreground: oklch(0.99 0 0);
+  --destructive: #EF4444;
+  --destructive-foreground: #F7F4FC;
 
-  --success: oklch(0.7 0.16 155);
-  --warning: oklch(0.78 0.16 80);
-  --info: oklch(0.7 0.14 240);
+  --success: #16D98A;
+  --warning: #F5B731;
+  --info: #258CFF;
 
-  --border: oklch(1 0 0 / 8%);
-  --input: oklch(1 0 0 / 10%);
-  --ring: oklch(0.66 0.21 320);
+  --border: #29233C;
+  --input: #29233C;
+  --ring: #A020F0;
 
-  --sidebar: oklch(0.13 0.02 290);
-  --sidebar-foreground: oklch(0.92 0.01 290);
-  --sidebar-primary: oklch(0.66 0.21 320);
-  --sidebar-primary-foreground: oklch(0.99 0 0);
-  --sidebar-accent: oklch(0.22 0.03 290);
-  --sidebar-accent-foreground: oklch(0.97 0.01 290);
-  --sidebar-border: oklch(1 0 0 / 6%);
+  --sidebar: #100E19;
+  --sidebar-foreground: #F7F4FC;
+  --sidebar-primary: #A020F0;
+  --sidebar-primary-foreground: #F7F4FC;
+  --sidebar-accent: #1B172A;
+  --sidebar-accent-foreground: #F7F4FC;
+  --sidebar-border: #29233C;
 
   /* Gradients & shadows */
-  --gradient-primary: linear-gradient(135deg, var(--primary-deep), var(--primary), var(--primary-glow));
-  --gradient-card: linear-gradient(140deg, oklch(0.22 0.03 290 / 0.9), oklch(0.18 0.025 290 / 0.7));
-  --gradient-glow: radial-gradient(ellipse at top, oklch(0.66 0.21 320 / 0.18), transparent 60%);
-  --shadow-glow: 0 0 40px -8px oklch(0.66 0.21 320 / 0.45);
-  --shadow-elegant: 0 12px 40px -12px oklch(0.1 0.02 290 / 0.6);
-  --shadow-card: 0 1px 0 0 oklch(1 0 0 / 0.05) inset, 0 8px 24px -8px oklch(0.1 0.02 290 / 0.5);
+  --gradient-primary: linear-gradient(135deg, #743BDA, #A020F0, #C13BFF);
+  --gradient-card: linear-gradient(140deg, rgba(27, 23, 42, 0.9), rgba(21, 19, 34, 0.85));
+  --gradient-glow: radial-gradient(ellipse at 70% 0%, rgba(160, 32, 240, 0.16), transparent 60%);
+  --shadow-glow: 0 0 40px -8px rgba(160, 32, 240, 0.45);
+  --shadow-elegant: 0 12px 40px -12px rgba(9, 8, 18, 0.75);
+  --shadow-card: 0 1px 0 0 rgba(255, 255, 255, 0.04) inset, 0 8px 24px -8px rgba(9, 8, 18, 0.55);
 
-  --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-smooth: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 @layer base {

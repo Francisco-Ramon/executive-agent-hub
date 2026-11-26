@@ -1,14 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { ChatPanel } from "@/components/chat/ChatPanel";
+import { OverviewDashboard } from "@/components/dashboard/OverviewDashboard";
 
 export const Route = createFileRoute("/_app/")({
   component: Dashboard,
 });
 
 function Dashboard() {
-  return (
-    <div className="h-[calc(100dvh-7rem)] md:h-[calc(100vh-3rem)]">
-      <ChatPanel />
-    </div>
-  );
+  return <OverviewDashboard />;
 }
