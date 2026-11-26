@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { Calendar as CalendarIcon, Clock, BookOpen, RefreshCw, Loader2, Mail } from "lucide-react";
 import { PageHeader, Card } from "@/components/ui/page";
 import { toast } from "sonner";
@@ -117,7 +117,7 @@ function CalendarPage() {
             <div className="flex-1">
               <div className="font-medium">Google Calendar isn't connected</div>
               <div className="text-sm text-muted-foreground mt-1">
-                Head to Settings → Integrations to connect your Google account. Once connected, your real calendar events will show up here.
+                Head to <Link to="/settings" className="text-primary underline font-medium hover:text-primary/80">Settings → Connection Overview</Link> to connect your Google account. Once connected, your real calendar events will show up here.
               </div>
             </div>
           </div>

@@ -1,6 +1,7 @@
 // Shared agent tool definitions + executor used by both agent-chat and telegram-webhook.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { getValidAccessToken, googleFetch } from "./google.ts";
+import { resolveAiEndpoint, formatProviderError, type AiProviderName } from "./ai-provider.ts";
 
 const GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me";
 const CAL = "https://www.googleapis.com/calendar/v3/calendars/primary";
@@ -291,111 +292,200 @@ export async function executeAgentTool(name: string, args: any, supabase: any, u
   }
 }
 
-// Pick the AI endpoint: prefer Groq, then Gemini, then Lovable gateway.
-function aiEndpoint(): { url: string; key: string; model: string; provider: "groq" | "gemini" | "lovable" } {
-  const groq = Deno.env.get("GROQ_API_KEY");
-  if (groq) {
-    return {
-      url: "https://api.groq.com/openai/v1/chat/completions",
-      key: groq,
-      model: "llama-3.3-70b-versatile",
-      provider: "groq",
-    };
+async function consumeSseResponse(
+  resp: Response,
+  onToken?: (chunk: string) => void
+): Promise<{ content: string; toolCalls: any[] }> {
+  if (!resp.body) return { content: "", toolCalls: [] };
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let content = "";
+  const tcMap = new Map<number, { id: string; type: string; function: { name: string; arguments: string } }>();
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let idx: number;
+    while ((idx = buffer.indexOf("\n")) !== -1) {
+      const line = buffer.slice(0, idx).trim();
+      buffer = buffer.slice(idx + 1);
+      if (!line.startsWith("data:")) continue;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === "[DONE]") continue;
+      try {
+        const json = JSON.parse(payload);
+        const delta = json.choices?.[0]?.delta;
+        if (!delta) continue;
+        if (typeof delta.content === "string" && delta.content.length > 0) {
+          content += delta.content;
+          if (onToken) onToken(delta.content);
+        }
+        if (Array.isArray(delta.tool_calls)) {
+          for (const tc of delta.tool_calls) {
+            const index = tc.index ?? 0;
+            if (!tcMap.has(index)) {
+              tcMap.set(index, {
+                id: tc.id || `call_${index}_${Date.now()}`,
+                type: tc.type || "function",
+                function: { name: tc.function?.name || "", arguments: tc.function?.arguments || "" },
+              });
+            } else {
+              const existing = tcMap.get(index)!;
+              if (tc.id) existing.id = tc.id;
+              if (tc.function?.name) existing.function.name += tc.function.name;
+              if (tc.function?.arguments) existing.function.arguments += tc.function.arguments;
+            }
+          }
+        }
+      } catch {
+        // ignore partial or malformed SSE JSON line
+      }
+    }
   }
-  const gemini = Deno.env.get("GEMINI_API_KEY");
-  if (gemini) {
-    return {
-      url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-      key: gemini,
-      model: "gemini-2.5-flash-lite",
-      provider: "gemini",
-    };
-  }
-  return {
-    url: "https://ai.gateway.lovable.dev/v1/chat/completions",
-    key: Deno.env.get("LOVABLE_API_KEY") ?? "",
-    model: "google/gemini-2.5-flash",
-    provider: "lovable",
-  };
+
+  const toolCalls = Array.from(tcMap.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([, v]) => v);
+  return { content: content.trim(), toolCalls };
 }
 
-// Run a tool-using chat loop. apiKey arg is ignored when GEMINI_API_KEY is configured.
+// Run a tool-using chat loop across configured AI providers with automatic fallback.
 export async function runAgentLoop(opts: {
-  apiKey: string;
+  endpoints: ResolvedEndpoint[];
   systemPrompt: string;
   messages: Array<{ role: string; content: string }>;
   supabase: any;
   userId: string;
   maxIterations?: number;
-  model?: string;
-}): Promise<{ content: string; tools: any[] }> {
-  const { systemPrompt, messages, supabase, userId } = opts;
+  stream?: boolean;
+  onToken?: (token: string) => void;
+  onToolCall?: (toolName: string) => void;
+  onProviderChange?: (provider: AiProviderName, model: string) => void;
+}): Promise<{ content: string; tools: any[]; provider: AiProviderName; model: string }> {
+  const { endpoints, systemPrompt, messages, supabase, userId, onToken, onToolCall, onProviderChange } = opts;
   const maxIterations = opts.maxIterations ?? 6;
-  const ep = aiEndpoint();
-  const model = opts.model ?? ep.model;
+  const useStream = Boolean(opts.stream && onToken);
+
+  if (!endpoints || endpoints.length === 0) {
+    throw new Error("No AI provider configured. Please configure an AI provider in Settings.");
+  }
 
   let working: any[] = [{ role: "system", content: systemPrompt }, ...messages];
   const toolEvents: any[] = [];
   let finalContent = "";
 
-  for (let i = 0; i < maxIterations; i++) {
-    let resp!: Response;
-    for (let attempt = 0; attempt < 4; attempt++) {
-      resp = await fetch(ep.url, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${ep.key}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model, messages: working, tools: agentTools, tool_choice: "auto" }),
-      });
-      if (resp.status !== 429 && resp.status !== 503) break;
-      const wait = 1500 * Math.pow(2, attempt);
-      console.warn(`AI gateway ${resp.status}, retrying in ${wait}ms`);
-      await new Promise((r) => setTimeout(r, wait));
-    }
-    if (!resp.ok) {
-      const t = await resp.text();
-      console.error("AI gateway error:", resp.status, t);
-      const err = new Error(`AI gateway ${resp.status}`);
-      (err as any).status = resp.status;
-      throw err;
-    }
-    const data = await resp.json();
-    const choice = data.choices?.[0]?.message;
-    if (!choice) break;
+  // Try each provider endpoint in the fallback chain
+  let lastError: Error | null = null;
 
-    if (choice.tool_calls && choice.tool_calls.length > 0) {
-      working.push(choice);
-      for (const tc of choice.tool_calls) {
-        const args = JSON.parse(tc.function.arguments || "{}");
-        const result = await executeAgentTool(tc.function.name, args, supabase, userId);
-        toolEvents.push({ name: tc.function.name, args, result });
-        working.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(result) });
-      }
-      continue;
+  for (let pIdx = 0; pIdx < endpoints.length; pIdx++) {
+    const ep = endpoints[pIdx];
+    if (onProviderChange && pIdx > 0) {
+      onProviderChange(ep.provider, ep.model);
     }
 
-    finalContent = extractAiText(choice);
-    break;
-  }
-
-  // If we exited the loop still mid-tool-use (no text produced), ask the model
-  // one more time WITHOUT tools so it must produce a textual answer.
-  if (!finalContent) {
     try {
-      const resp = await fetch(ep.url, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${ep.key}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model, messages: working }),
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        finalContent = extractAiText(data.choices?.[0]?.message);
-      } else {
-        console.error("final-text fallback failed:", resp.status, await resp.text());
+      for (let i = 0; i < maxIterations; i++) {
+        let resp!: Response;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          resp = await fetch(ep.url, {
+            method: "POST",
+            headers: ep.headers,
+            body: JSON.stringify({
+              model: ep.model,
+              messages: working,
+              tools: agentTools,
+              tool_choice: "auto",
+              ...(useStream ? { stream: true } : {}),
+            }),
+          });
+          if (resp.status !== 429 && resp.status !== 503) break;
+          const wait = 1000 * Math.pow(2, attempt);
+          await new Promise((r) => setTimeout(r, wait));
+        }
+
+        // If rate limited or unavailable, throw so we can failover to next provider
+        if (!resp.ok) {
+          const t = await resp.text();
+          console.warn(`Provider ${ep.provider} returned ${resp.status}:`, t);
+          const err = new Error(`Provider ${ep.provider} error: ${resp.status}`);
+          (err as any).status = resp.status;
+          throw err;
+        }
+
+        if (useStream) {
+          const streamed = await consumeSseResponse(resp, onToken);
+          if (streamed.toolCalls.length > 0) {
+            working.push({ role: "assistant", content: streamed.content || null, tool_calls: streamed.toolCalls });
+            for (const tc of streamed.toolCalls) {
+              if (onToolCall) onToolCall(tc.function.name);
+              let args: Record<string, any> = {};
+              try { args = JSON.parse(tc.function.arguments || "{}"); } catch { args = {}; }
+              const result = await executeAgentTool(tc.function.name, args, supabase, userId);
+              toolEvents.push({ name: tc.function.name, args, result });
+              working.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(result) });
+            }
+            continue;
+          }
+          finalContent = streamed.content;
+          break;
+        } else {
+          const data = await resp.json();
+          const choice = data.choices?.[0]?.message;
+          if (!choice) break;
+
+          if (choice.tool_calls && choice.tool_calls.length > 0) {
+            working.push(choice);
+            for (const tc of choice.tool_calls) {
+              if (onToolCall) onToolCall(tc.function.name);
+              let args: Record<string, any> = {};
+              try { args = JSON.parse(tc.function.arguments || "{}"); } catch { args = {}; }
+              const result = await executeAgentTool(tc.function.name, args, supabase, userId);
+              toolEvents.push({ name: tc.function.name, args, result });
+              working.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(result) });
+            }
+            continue;
+          }
+
+          finalContent = extractAiText(choice);
+          break;
+        }
       }
-    } catch (e) {
-      console.error("final-text fallback threw:", e);
+
+      // Fallback text generation if needed
+      if (!finalContent) {
+        try {
+          const resp = await fetch(ep.url, {
+            method: "POST",
+            headers: ep.headers,
+            body: JSON.stringify({ model: ep.model, messages: working, ...(useStream ? { stream: true } : {}) }),
+          });
+          if (resp.ok) {
+            if (useStream) {
+              const streamed = await consumeSseResponse(resp, onToken);
+              finalContent = streamed.content;
+            } else {
+              const data = await resp.json();
+              finalContent = extractAiText(data.choices?.[0]?.message);
+            }
+          }
+        } catch (_) {
+          // ignore
+        }
+      }
+
+      // If we got content or executed tools, success! Return immediately
+      return { content: finalContent, tools: toolEvents, provider: ep.provider, model: ep.model };
+    } catch (e: any) {
+      lastError = e;
+      // If 401 (bad key), don't failover automatically — let user know key is invalid
+      if (e?.status === 401) throw e;
+      // Otherwise failover to next provider in chain
+      console.warn(`Failing over from ${ep.provider} to next available provider...`);
     }
   }
 
-  return { content: finalContent, tools: toolEvents };
+  throw lastError || new Error("All configured AI providers failed.");
 }

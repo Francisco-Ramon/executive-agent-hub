@@ -11,43 +11,64 @@ export function Sidebar() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
-  const [displayName, setDisplayName] = useState<string>("Francisco Olum");
+  const [displayName, setDisplayName] = useState<string>("");
   const [counts, setCounts] = useState<{ inbox: number; tasks: number }>({
-    inbox: 12,
-    tasks: 5,
+    inbox: 0,
+    tasks: 0,
   });
 
   useEffect(() => {
     if (!user) return;
     let active = true;
-    (async () => {
+
+    const refreshSidebar = async () => {
       try {
-        const [{ data: profile }, { count: openTasks }] = await Promise.all([
+        const [{ data: profile }, { count: openTasks }, mailRes] = await Promise.all([
           supabase.from("profiles").select("display_name").eq("id", user.id).maybeSingle(),
           supabase
             .from("tasks")
             .select("id", { count: "exact", head: true })
             .eq("user_id", user.id)
             .neq("status", "completed"),
+          supabase.functions.invoke("gmail-api", { body: { action: "list_unread" } }).catch(() => ({ data: null })),
         ]);
         if (!active) return;
-        const rawName = profile?.display_name || (user.user_metadata?.display_name as string | undefined);
-        if (rawName && rawName.trim()) {
-          setDisplayName(rawName);
-        }
-        if (typeof openTasks === "number" && openTasks > 0) {
-          setCounts((prev) => ({ ...prev, tasks: openTasks }));
-        }
+
+        const rawName =
+          profile?.display_name ||
+          (user.user_metadata?.display_name as string | undefined) ||
+          user.email?.split("@")[0] ||
+          "User";
+        setDisplayName(rawName);
+
+        const unreadCount = Array.isArray(mailRes?.data?.messages) ? mailRes.data.messages.length : 0;
+        setCounts({
+          inbox: unreadCount,
+          tasks: typeof openTasks === "number" ? openTasks : 0,
+        });
       } catch {
-        // Keep reference defaults when tables/queries are unavailable
+        // Keep 0 counts if queries fail
       }
-    })();
+    };
+
+    refreshSidebar();
+
+    const channel = supabase
+      .channel(`sidebar-live-${user.id}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "tasks", filter: `user_id=eq.${user.id}` }, refreshSidebar)
+      .on("postgres_changes", { event: "*", schema: "public", table: "profiles", filter: `id=eq.${user.id}` }, refreshSidebar)
+      .subscribe();
+
+    window.addEventListener("focus", refreshSidebar);
     return () => {
       active = false;
+      window.removeEventListener("focus", refreshSidebar);
+      supabase.removeChannel(channel);
     };
   }, [user]);
 
-  const initial = (displayName.trim()[0] || "F").toUpperCase();
+  const resolvedName = displayName || user?.email?.split("@")[0] || "Account";
+  const initial = (resolvedName.trim()[0] || "U").toUpperCase();
 
   return (
     <aside className="hidden md:flex flex-col w-[240px] shrink-0 bg-[#100E19] border-r border-[#29233C] h-screen sticky top-0 z-20 select-none">
@@ -88,7 +109,7 @@ export function Sidebar() {
             >
               <Icon className={`w-[17px] h-[17px] shrink-0 ${active ? "text-[#F7F4FC]" : "text-[#A6A0B7]"}`} />
               <span className="truncate">{item.label}</span>
-              {typeof badge === "number" && (
+              {typeof badge === "number" && badge > 0 && (
                 <span className="ml-auto px-2 py-0.5 rounded-full text-[11px] font-semibold leading-none bg-[#A020F0] text-[#F7F4FC]">
                   {badge}
                 </span>
@@ -119,7 +140,7 @@ export function Sidebar() {
       </div>
 
       {/* Bottom User Profile */}
-      <div className="px-3 py-3 border-t border-[#29233C] relative">
+      <div className="px-3 py-3 border-t border-[#29233C] relative shrink-0">
         <button
           type="button"
           onClick={() => setProfileMenuOpen((v) => !v)}
@@ -129,7 +150,7 @@ export function Sidebar() {
             {initial}
           </div>
           <div className="min-w-0 flex-1">
-            <div className="text-[13px] font-medium text-[#F7F4FC] truncate">{displayName}</div>
+            <div className="text-[13px] font-medium text-[#F7F4FC] truncate">{resolvedName}</div>
             <div className="flex items-center gap-1.5 text-[11px] text-[#16D98A]">
               <span className="w-1.5 h-1.5 rounded-full bg-[#16D98A]" />
               <span>Online</span>

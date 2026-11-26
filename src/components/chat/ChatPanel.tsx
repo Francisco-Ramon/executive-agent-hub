@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Send, Sparkles, Loader2, Wrench, Mic, MicOff, Paperclip, Plus, ChevronDown, FileText, X, Copy, RefreshCw, Check, Trash2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
-import { sendToAgent, embedDocument, type ChatMsg } from "@/lib/agent";
+import { streamFromAgent, getAiStatus, embedDocument, type ChatMsg, type AiStatus } from "@/lib/agent";
 import { supabase } from "@/integrations/supabase/client";
 import { listConversations, createConversation, loadMessages, deleteConversation, type Conversation } from "@/lib/conversations";
 import { extractText, ACCEPTED_TYPES, MAX_FILE_SIZE } from "@/lib/documents";
@@ -31,6 +31,8 @@ export function ChatPanel() {
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [listening, setListening] = useState(false);
   const [voiceSupported, setVoiceSupported] = useState(false);
+  const [aiStatus, setAiStatus] = useState<AiStatus | null>(null);
+  const [activeTool, setActiveTool] = useState<string | null>(null);
 
   const recognitionRef = useRef<any>(null);
   const finalTranscriptRef = useRef<string>("");
@@ -39,8 +41,9 @@ export function ChatPanel() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const convoMenuRef = useRef<HTMLDivElement>(null);
 
-  // Load conversations & resume last on mount
+  // Load conversations & AI provider status on mount
   useEffect(() => {
+    getAiStatus().then(setAiStatus).catch(() => {});
     const pendingPrompt = sessionStorage.getItem("cisco_pending_prompt");
     if (pendingPrompt) {
       sessionStorage.removeItem("cisco_pending_prompt");
@@ -245,14 +248,28 @@ export function ChatPanel() {
 
     const userText = text.trim() || (attachments.length > 0 ? `Uploaded ${attachments.map(a => a.filename).join(", ")}. Please review.` : "");
     const next: ChatMessage[] = [...messages, { role: "user", content: userText, attachments }];
-    setMessages(next);
+    setMessages([...next, { role: "assistant", content: "" }]);
     setInput("");
+    setActiveTool(null);
 
     try {
-      const res = await sendToAgent(
+      const res = await streamFromAgent(
         next.map(({ role, content }) => ({ role, content })),
-        conversationId
+        conversationId,
+        {
+          onStatus: (info) => setAiStatus((prev) => ({
+            configured: true,
+            activeProvider: info.provider as any,
+            model: info.model,
+            availableProviders: prev?.availableProviders ?? [info.provider],
+          })),
+          onToolCall: (name) => setActiveTool(name),
+          onToken: (_token, accumulated) => {
+            setMessages([...next, { role: "assistant", content: accumulated }]);
+          },
+        }
       );
+      setActiveTool(null);
       setMessages([...next, { role: "assistant", content: res.content || "(no response)", tools: res.tools }]);
       // refresh conversations list for new title / order
       try {
@@ -260,6 +277,7 @@ export function ChatPanel() {
         setConversations(list);
       } catch { /* noop */ }
     } catch (e: any) {
+      setActiveTool(null);
       toast.error(e.message || "Agent error");
       setMessages(next);
     } finally {
@@ -274,16 +292,26 @@ export function ChatPanel() {
     for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "user") { lastUserIdx = i; break; }
     if (lastUserIdx < 0) return;
     const trimmed = messages.slice(0, lastUserIdx + 1);
-    setMessages(trimmed);
+    setMessages([...trimmed, { role: "assistant", content: "" }]);
     setBusy(true);
+    setActiveTool(null);
     try {
-      const res = await sendToAgent(
+      const res = await streamFromAgent(
         trimmed.map(({ role, content }) => ({ role, content })),
-        conversationId!
+        conversationId!,
+        {
+          onToolCall: (name) => setActiveTool(name),
+          onToken: (_token, accumulated) => {
+            setMessages([...trimmed, { role: "assistant", content: accumulated }]);
+          },
+        }
       );
+      setActiveTool(null);
       setMessages([...trimmed, { role: "assistant", content: res.content || "(no response)", tools: res.tools }]);
     } catch (e: any) {
+      setActiveTool(null);
       toast.error(e.message || "Agent error");
+      setMessages(trimmed);
     } finally { setBusy(false); }
   }
 
@@ -327,7 +355,12 @@ export function ChatPanel() {
         <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold">Mr. Cisco</div>
           <div className="text-[11px] text-muted-foreground truncate">
-            {currentConvo?.title ?? "Executive Agent"} · online
+            {currentConvo?.title ?? "Executive Agent"} ·{" "}
+            {aiStatus === null
+              ? "connecting…"
+              : aiStatus.configured
+              ? `online (${aiStatus.activeProvider})`
+              : "AI API not configured"}
           </div>
         </div>
 
@@ -402,9 +435,16 @@ export function ChatPanel() {
                 }`}
               >
                 {m.role === "assistant" ? (
-                  <div className="prose prose-sm prose-invert max-w-none prose-p:my-2 prose-ul:my-2 prose-headings:mt-3 prose-headings:mb-2">
-                    <ReactMarkdown>{m.content}</ReactMarkdown>
-                  </div>
+                  m.content ? (
+                    <div className="prose prose-sm prose-invert max-w-none prose-p:my-2 prose-ul:my-2 prose-headings:mt-3 prose-headings:mb-2">
+                      <ReactMarkdown>{m.content}</ReactMarkdown>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
+                      <span>{activeTool ? `Running ${activeTool}…` : "Mr. Cisco is thinking…"}</span>
+                    </div>
+                  )
                 ) : (
                   m.content
                 )}

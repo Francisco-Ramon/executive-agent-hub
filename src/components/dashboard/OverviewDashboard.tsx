@@ -16,6 +16,7 @@ import {
   Lightbulb,
   ChevronDown,
   ArrowRight,
+  MessageSquare,
 } from "lucide-react";
 import aiRobot from "@/assets/ai-robot.jpg";
 import { supabase } from "@/integrations/supabase/client";
@@ -27,6 +28,8 @@ type DashboardStats = {
   pendingTasks: number;
   upcomingEvents: number;
   newMessages: number;
+  tasksAddedToday: number;
+  waMessagesToday: number;
 };
 
 type EventEntry = {
@@ -42,42 +45,40 @@ type ActivityEntry = {
   id: string;
   title: string;
   timeAgo: string;
-  kind: "email" | "whatsapp" | "task" | "calendar";
+  timestamp: number;
+  kind: "email" | "whatsapp" | "task" | "calendar" | "chat";
 };
 
-const REFERENCE_EVENTS: EventEntry[] = [
-  {
-    id: "ev-1",
-    title: "Project Review Meeting",
-    timeText: "Today · 6:00 PM – 7:00 PM",
-    badge: "Today",
-    badgeVariant: "purple",
-    dotColor: "#A020F0",
-  },
-  {
-    id: "ev-2",
-    title: "Team Sync",
-    timeText: "Fri, Nov 28 · 10:00 AM",
-    badge: "Tomorrow",
-    badgeVariant: "blue",
-    dotColor: "#258CFF",
-  },
-  {
-    id: "ev-3",
-    title: "Client Presentation",
-    timeText: "Sat, Nov 29 · 2:00 PM",
-    badge: "In 3 days",
-    badgeVariant: "neutral",
-    dotColor: "#16D98A",
-  },
-];
+function timeAgo(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.max(0, Math.floor(diff / 60000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
 
-const REFERENCE_ACTIVITIES: ActivityEntry[] = [
-  { id: "act-1", title: "New email from Aveniq Solutions", timeAgo: "2m ago", kind: "email" },
-  { id: "act-2", title: "New WhatsApp message", timeAgo: "5m ago", kind: "whatsapp" },
-  { id: "act-3", title: "Task completed: Update website", timeAgo: "12m ago", kind: "task" },
-  { id: "act-4", title: "Meeting added: Client Demo", timeAgo: "1h ago", kind: "calendar" },
-];
+function getGreeting(hour: number): string {
+  if (hour < 12) return "Good morning";
+  if (hour < 17) return "Good afternoon";
+  return "Good evening";
+}
+
+function formatLiveTimestamp(date: Date): string {
+  const datePart = date.toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
+  const timePart = date.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  return `${datePart} · ${timePart}`;
+}
 
 function Sparkline({ color, variant }: { color: string; variant: 1 | 2 | 3 | 4 }) {
   const paths: Record<1 | 2 | 3 | 4, string> = {
@@ -136,9 +137,16 @@ function ActivityIcon({ kind }: { kind: ActivityEntry["kind"] }) {
       </div>
     );
   }
+  if (kind === "calendar") {
+    return (
+      <div className="w-8 h-8 rounded-lg bg-[#743BDA]/25 border border-[#743BDA]/40 flex items-center justify-center shrink-0 text-[#C13BFF]">
+        <Calendar className="w-4 h-4" />
+      </div>
+    );
+  }
   return (
-    <div className="w-8 h-8 rounded-lg bg-[#743BDA]/25 border border-[#743BDA]/40 flex items-center justify-center shrink-0 text-[#C13BFF]">
-      <Calendar className="w-4 h-4" />
+    <div className="w-8 h-8 rounded-lg bg-[#A020F0]/20 border border-[#A020F0]/40 flex items-center justify-center shrink-0 text-[#C13BFF]">
+      <MessageSquare className="w-4 h-4" />
     </div>
   );
 }
@@ -148,18 +156,29 @@ export function OverviewDashboard() {
   const { user } = useAuth();
   const searchRef = useRef<HTMLInputElement>(null);
 
+  const [now, setNow] = useState<Date>(() => new Date());
+  const [firstName, setFirstName] = useState<string>("");
   const [searchQuery, setSearchQuery] = useState("");
   const [briefingRange, setBriefingRange] = useState<"Today" | "This Week">("Today");
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   const [stats, setStats] = useState<DashboardStats>({
-    unreadEmails: 12,
-    pendingTasks: 5,
-    upcomingEvents: 3,
-    newMessages: 8,
+    unreadEmails: 0,
+    pendingTasks: 0,
+    upcomingEvents: 0,
+    newMessages: 0,
+    tasksAddedToday: 0,
+    waMessagesToday: 0,
   });
-  const [events, setEvents] = useState<EventEntry[]>(REFERENCE_EVENTS);
-  const [activities, setActivities] = useState<ActivityEntry[]>(REFERENCE_ACTIVITIES);
+  const [events, setEvents] = useState<EventEntry[]>([]);
+  const [activities, setActivities] = useState<ActivityEntry[]>([]);
+  const [loadingData, setLoadingData] = useState(true);
+
+  // Live clock every 30s
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 30000);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -175,35 +194,67 @@ export function OverviewDashboard() {
   useEffect(() => {
     if (!user) return;
     let active = true;
-    (async () => {
+
+    const loadLiveOverview = async (silent = false) => {
+      if (!silent) setLoadingData(true);
       try {
-        const [{ data: tasksData }, { data: convosData }] = await Promise.all([
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0);
+        const startIso = startOfToday.toISOString();
+
+        const [
+          { data: profile },
+          { data: tasksData },
+          { data: convosData },
+          { data: waMsgsTodayData },
+          { data: draftsData },
+        ] = await Promise.all([
+          supabase.from("profiles").select("display_name").eq("id", user.id).maybeSingle(),
           supabase
             .from("tasks")
             .select("id, title, status, created_at")
             .eq("user_id", user.id)
             .order("created_at", { ascending: false })
-            .limit(20),
+            .limit(30),
           supabase
             .from("conversations")
             .select("id, title, last_message_at, created_at")
             .eq("user_id", user.id)
             .order("last_message_at", { ascending: false })
-            .limit(15),
+            .limit(20),
+          supabase
+            .from("chat_messages")
+            .select("id, created_at")
+            .eq("user_id", user.id)
+            .eq("channel", "whatsapp")
+            .eq("role", "user")
+            .gte("created_at", startIso),
+          supabase
+            .from("email_drafts")
+            .select("id, subject, status, created_at")
+            .eq("user_id", user.id)
+            .order("created_at", { ascending: false })
+            .limit(5),
         ]);
 
         if (!active) return;
 
-        const openTaskCount = (tasksData ?? []).filter((t) => t.status !== "completed").length;
-        const waConvoCount = (convosData ?? []).filter((c) => c.title?.startsWith("WhatsApp:")).length;
+        const fullName =
+          profile?.display_name ||
+          (user.user_metadata?.display_name as string | undefined) ||
+          user.email?.split("@")[0] ||
+          "there";
+        setFirstName(fullName.trim().split(/\s+/)[0]);
 
-        setStats((prev) => ({
-          ...prev,
-          pendingTasks: openTaskCount > 0 ? openTaskCount : prev.pendingTasks,
-          newMessages: waConvoCount > 0 ? waConvoCount : prev.newMessages,
-        }));
+        const allTasks = tasksData ?? [];
+        const openTasks = allTasks.filter((t) => t.status !== "completed");
+        const tasksAddedToday = allTasks.filter((t) => t.created_at >= startIso).length;
 
-        // Optional live calendar/gmail counts if user already linked Google
+        const allConvos = convosData ?? [];
+        const waConvos = allConvos.filter((c) => c.title?.startsWith("WhatsApp:"));
+        const waMessagesToday = (waMsgsTodayData ?? []).length;
+
+        // Live Google Calendar & Gmail (if connected)
         const [calRes, mailRes] = await Promise.allSettled([
           supabase.functions.invoke("calendar-api", { body: { action: "list_today" } }),
           supabase.functions.invoke("gmail-api", { body: { action: "list_unread" } }),
@@ -211,40 +262,124 @@ export function OverviewDashboard() {
 
         if (!active) return;
 
-        if (calRes.status === "fulfilled" && Array.isArray(calRes.value.data?.events) && calRes.value.data.events.length > 0) {
-          const liveEvents: EventEntry[] = calRes.value.data.events.slice(0, 3).map((ev: any, idx: number) => ({
-            id: ev.id || `live-ev-${idx}`,
-            title: ev.title || "Untitled Event",
-            timeText: ev.start
-              ? `Today · ${new Date(ev.start).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+        const liveCalEvents =
+          calRes.status === "fulfilled" && Array.isArray(calRes.value.data?.events)
+            ? calRes.value.data.events
+            : [];
+        const liveUnreadEmails =
+          mailRes.status === "fulfilled" && Array.isArray(mailRes.value.data?.messages)
+            ? mailRes.value.data.messages
+            : [];
+
+        setStats({
+          unreadEmails: liveUnreadEmails.length,
+          pendingTasks: openTasks.length,
+          upcomingEvents: liveCalEvents.length,
+          newMessages: waMessagesToday > 0 ? waMessagesToday : waConvos.length,
+          tasksAddedToday,
+          waMessagesToday,
+        });
+
+        const formattedEvents: EventEntry[] = liveCalEvents.slice(0, 3).map((ev: any, idx: number) => ({
+          id: ev.id || `ev-${idx}`,
+          title: ev.title || "Untitled Event",
+          timeText: ev.all_day
+            ? "All day"
+            : ev.start
+              ? `${new Date(ev.start).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}${
+                  ev.end ? ` – ${new Date(ev.end).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : ""
+                }`
               : "Today",
-            badge: idx === 0 ? "Today" : "Upcoming",
-            badgeVariant: idx === 0 ? "purple" : idx === 1 ? "blue" : "neutral",
-            dotColor: idx === 0 ? "#A020F0" : idx === 1 ? "#258CFF" : "#16D98A",
-          }));
-          setEvents(liveEvents);
-          setStats((prev) => ({ ...prev, upcomingEvents: calRes.value.data.events.length }));
+          badge: "Today",
+          badgeVariant: idx === 0 ? "purple" : idx === 1 ? "blue" : "neutral",
+          dotColor: idx === 0 ? "#A020F0" : idx === 1 ? "#258CFF" : "#16D98A",
+        }));
+        setEvents(formattedEvents);
+
+        // Assemble real Recent Activity from actual records
+        const liveActivity: ActivityEntry[] = [];
+
+        for (const msg of liveUnreadEmails.slice(0, 2)) {
+          liveActivity.push({
+            id: `mail-${msg.id}`,
+            title: `Email: ${msg.subject || msg.from || "New message"}`,
+            timeAgo: timeAgo(msg.date),
+            timestamp: msg.date ? new Date(msg.date).getTime() : 0,
+            kind: "email",
+          });
         }
 
-        if (mailRes.status === "fulfilled" && Array.isArray(mailRes.value.data?.messages) && mailRes.value.data.messages.length > 0) {
-          setStats((prev) => ({ ...prev, unreadEmails: mailRes.value.data.messages.length }));
+        for (const c of waConvos.slice(0, 2)) {
+          const ts = c.last_message_at || c.created_at;
+          liveActivity.push({
+            id: `wa-${c.id}`,
+            title: `WhatsApp: ${c.title.replace("WhatsApp: ", "")}`,
+            timeAgo: timeAgo(ts),
+            timestamp: ts ? new Date(ts).getTime() : 0,
+            kind: "whatsapp",
+          });
         }
 
-        // Merge any real completed tasks into Recent Activity if available
-        const completedTask = (tasksData ?? []).find((t) => t.status === "completed");
-        if (completedTask) {
-          setActivities((prev) =>
-            prev.map((a) =>
-              a.kind === "task" ? { ...a, title: `Task completed: ${completedTask.title}` } : a
-            )
-          );
+        for (const t of allTasks.slice(0, 2)) {
+          liveActivity.push({
+            id: `task-${t.id}`,
+            title: t.status === "completed" ? `Task completed: ${t.title}` : `Task added: ${t.title}`,
+            timeAgo: timeAgo(t.created_at),
+            timestamp: t.created_at ? new Date(t.created_at).getTime() : 0,
+            kind: "task",
+          });
         }
-      } catch {
-        // Keep reference values silently if optional tables/functions aren't active
+
+        for (const d of (draftsData ?? []).slice(0, 1)) {
+          liveActivity.push({
+            id: `draft-${d.id}`,
+            title: `Email draft: ${d.subject || "Untitled"}`,
+            timeAgo: timeAgo(d.created_at),
+            timestamp: d.created_at ? new Date(d.created_at).getTime() : 0,
+            kind: "email",
+          });
+        }
+
+        for (const c of allConvos.filter((x) => !x.title?.startsWith("WhatsApp:")).slice(0, 2)) {
+          const ts = c.last_message_at || c.created_at;
+          liveActivity.push({
+            id: `chat-${c.id}`,
+            title: `AI Chat: ${c.title || "Conversation"}`,
+            timeAgo: timeAgo(ts),
+            timestamp: ts ? new Date(ts).getTime() : 0,
+            kind: "chat",
+          });
+        }
+
+        liveActivity.sort((a, b) => b.timestamp - a.timestamp);
+        setActivities(liveActivity.slice(0, 4));
+      } catch (err) {
+        console.error("Failed to load overview data:", err);
+      } finally {
+        if (active && !silent) setLoadingData(false);
       }
-    })();
+    };
+
+    loadLiveOverview(false);
+
+    const refreshSilent = () => loadLiveOverview(true);
+    const channel = supabase
+      .channel(`overview-live-${user.id}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "tasks", filter: `user_id=eq.${user.id}` }, refreshSilent)
+      .on("postgres_changes", { event: "*", schema: "public", table: "conversations", filter: `user_id=eq.${user.id}` }, refreshSilent)
+      .on("postgres_changes", { event: "*", schema: "public", table: "chat_messages", filter: `user_id=eq.${user.id}` }, refreshSilent)
+      .on("postgres_changes", { event: "*", schema: "public", table: "email_drafts", filter: `user_id=eq.${user.id}` }, refreshSilent)
+      .on("postgres_changes", { event: "*", schema: "public", table: "profiles", filter: `id=eq.${user.id}` }, refreshSilent)
+      .subscribe();
+
+    window.addEventListener("focus", refreshSilent);
+    const poll = setInterval(refreshSilent, 60000);
+
     return () => {
       active = false;
+      clearInterval(poll);
+      window.removeEventListener("focus", refreshSilent);
+      supabase.removeChannel(channel);
     };
   }, [user]);
 
@@ -278,6 +413,10 @@ export function OverviewDashboard() {
     }
   }
 
+  const resolvedFirstName = firstName || user?.email?.split("@")[0] || "there";
+  const totalNotifications = stats.unreadEmails + stats.pendingTasks;
+  const allClear = stats.upcomingEvents === 0 && stats.pendingTasks === 0 && stats.unreadEmails === 0;
+
   return (
     <div className="relative max-w-[1440px] mx-auto flex flex-col gap-4 pb-2">
       {/* Ambient decorative background ribbons behind hero */}
@@ -295,16 +434,8 @@ export function OverviewDashboard() {
               <stop offset="100%" stopColor="#C13BFF" stopOpacity="0.4" />
             </linearGradient>
           </defs>
-          <path
-            d="M 40 160 C 210 260, 410 270, 800 70"
-            stroke="url(#wave-purple)"
-            strokeWidth="2.5"
-          />
-          <path
-            d="M 10 215 C 240 285, 480 250, 800 130"
-            stroke="url(#wave-blue)"
-            strokeWidth="1.75"
-          />
+          <path d="M 40 160 C 210 260, 410 270, 800 70" stroke="url(#wave-purple)" strokeWidth="2.5" />
+          <path d="M 10 215 C 240 285, 480 250, 800 130" stroke="url(#wave-blue)" strokeWidth="1.75" />
           <ellipse cx="590" cy="140" rx="220" ry="120" fill="rgba(160, 32, 240, 0.12)" />
         </svg>
       </div>
@@ -342,9 +473,11 @@ export function OverviewDashboard() {
             className="relative w-9 h-9 rounded-full flex items-center justify-center text-[#A6A0B7] hover:text-[#F7F4FC] hover:bg-[#151322] transition cursor-pointer"
           >
             <Bell className="w-[18px] h-[18px]" />
-            <span className="absolute top-1 right-1 min-w-[16px] h-4 px-1 rounded-full bg-[#EF4444] text-white text-[10px] font-bold flex items-center justify-center leading-none">
-              3
-            </span>
+            {totalNotifications > 0 && (
+              <span className="absolute top-1 right-1 min-w-[16px] h-4 px-1 rounded-full bg-[#EF4444] text-white text-[10px] font-bold flex items-center justify-center leading-none">
+                {totalNotifications}
+              </span>
+            )}
           </button>
 
           <button
@@ -362,10 +495,10 @@ export function OverviewDashboard() {
       <section className="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-4 pt-3 pb-1 min-h-[175px]">
         <div className="max-w-xl">
           <h1 className="text-[32px] sm:text-[38px] font-bold tracking-tight text-[#F7F4FC] leading-[1.15]">
-            Good evening, Cisco. <span className="inline-block">👋</span>
+            {getGreeting(now.getHours())}, {resolvedFirstName}. <span className="inline-block">👋</span>
           </h1>
           <p className="text-[15px] text-[#E2DCF0] mt-2 font-normal">
-            Thursday, November 26, 2026 &middot; 9:12 PM
+            {formatLiveTimestamp(now)}
           </p>
           <p className="text-[14px] text-[#A6A0B7] mt-3">
             Your executive workspace. Here&apos;s what needs your attention.
@@ -375,7 +508,6 @@ export function OverviewDashboard() {
         {/* Robot + Speech Bubble */}
         <div className="relative flex items-center justify-end lg:pr-4 self-end lg:self-auto">
           <div className="relative flex items-center">
-            {/* Soft neon glow behind robot */}
             <div
               className="pointer-events-none absolute -inset-4 rounded-full blur-2xl opacity-55"
               style={{
@@ -396,19 +528,18 @@ export function OverviewDashboard() {
               />
             </div>
 
-            {/* Speech Bubble */}
-            <div className="relative -ml-3 mb-8 max-w-[215px] rounded-2xl bg-[#151322]/90 border border-[#29233C] px-4 py-3 text-[13px] leading-snug text-[#F7F4FC] shadow-[0_8px_24px_rgba(9,8,18,0.65)] backdrop-blur-md">
+            <div className="relative -ml-3 mb-8 max-w-[220px] rounded-2xl bg-[#151322]/90 border border-[#29233C] px-4 py-3 text-[13px] leading-snug text-[#F7F4FC] shadow-[0_8px_24px_rgba(9,8,18,0.65)] backdrop-blur-md">
               <span
                 className="absolute -left-2 bottom-4 w-3 h-3 bg-[#151322] border-l border-b border-[#29233C] rotate-45"
                 aria-hidden="true"
               />
-              I&apos;m here to help you achieve more, Cisco.
+              I&apos;m here to help you achieve more, {resolvedFirstName}.
             </div>
           </div>
         </div>
       </section>
 
-      {/* Four Productivity Metric Cards */}
+      {/* Four Productivity Metric Cards (100% live counts) */}
       <section className="relative z-10 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Card 1: Unread Emails */}
         <button
@@ -428,8 +559,8 @@ export function OverviewDashboard() {
                 <div className="text-[13px] text-[#A6A0B7] mt-1.5">Unread Emails</div>
               </div>
             </div>
-            <span className="text-[12px] font-semibold text-[#16D98A] flex items-center gap-0.5">
-              ↑ +2
+            <span className="text-[12px] font-semibold text-[#A6A0B7] flex items-center gap-0.5">
+              {stats.unreadEmails > 0 ? "Live" : "→ 0"}
             </span>
           </div>
           <div className="absolute right-3 bottom-1">
@@ -455,8 +586,12 @@ export function OverviewDashboard() {
                 <div className="text-[13px] text-[#A6A0B7] mt-1.5">Pending Tasks</div>
               </div>
             </div>
-            <span className="text-[12px] font-semibold text-[#16D98A] flex items-center gap-0.5">
-              ↑ +1
+            <span
+              className={`text-[12px] font-semibold flex items-center gap-0.5 ${
+                stats.tasksAddedToday > 0 ? "text-[#16D98A]" : "text-[#A6A0B7]"
+              }`}
+            >
+              {stats.tasksAddedToday > 0 ? `↑ +${stats.tasksAddedToday}` : "→ 0"}
             </span>
           </div>
           <div className="absolute right-3 bottom-1">
@@ -483,7 +618,7 @@ export function OverviewDashboard() {
               </div>
             </div>
             <span className="text-[12px] font-semibold text-[#A6A0B7] flex items-center gap-0.5">
-              → 0
+              {stats.upcomingEvents > 0 ? "Today" : "→ 0"}
             </span>
           </div>
           <div className="absolute right-3 bottom-1">
@@ -509,8 +644,12 @@ export function OverviewDashboard() {
                 <div className="text-[13px] text-[#A6A0B7] mt-1.5">New Messages</div>
               </div>
             </div>
-            <span className="text-[12px] font-semibold text-[#16D98A] flex items-center gap-0.5">
-              ↑ +3
+            <span
+              className={`text-[12px] font-semibold flex items-center gap-0.5 ${
+                stats.waMessagesToday > 0 ? "text-[#16D98A]" : "text-[#A6A0B7]"
+              }`}
+            >
+              {stats.waMessagesToday > 0 ? `↑ +${stats.waMessagesToday}` : "→ 0"}
             </span>
           </div>
           <div className="absolute right-3 bottom-1">
@@ -523,7 +662,6 @@ export function OverviewDashboard() {
       <section className="relative z-10 grid grid-cols-1 lg:grid-cols-12 gap-4">
         {/* AI Briefing Panel */}
         <div className="lg:col-span-5 rounded-2xl border border-[#3E276E] bg-gradient-to-br from-[#231442] via-[#151322] to-[#12101D] p-5 relative overflow-hidden flex flex-col justify-between shadow-[0_10px_30px_-10px_rgba(160,32,240,0.2)]">
-          {/* Subtle internal glow */}
           <div
             className="pointer-events-none absolute -top-10 -right-10 w-48 h-48 rounded-full blur-3xl opacity-30"
             style={{ background: "radial-gradient(circle, #C13BFF 0%, transparent 70%)" }}
@@ -551,11 +689,13 @@ export function OverviewDashboard() {
               </div>
               <div>
                 <h3 className="text-[18px] font-bold text-[#F7F4FC] leading-snug">
-                  You&apos;re all set for today!
+                  {allClear ? "You're all caught up!" : "Here is your live summary"}
                 </h3>
                 <p className="text-[13px] text-[#A6A0B7] leading-relaxed mt-1.5">
-                  You have {stats.upcomingEvents} upcoming events, {stats.pendingTasks} pending tasks and{" "}
-                  {stats.unreadEmails} unread emails. Let me know how I can help.
+                  You have {stats.upcomingEvents} upcoming{" "}
+                  {stats.upcomingEvents === 1 ? "event" : "events"}, {stats.pendingTasks} pending{" "}
+                  {stats.pendingTasks === 1 ? "task" : "tasks"} and {stats.unreadEmails} unread{" "}
+                  {stats.unreadEmails === 1 ? "email" : "emails"}. Let me know how I can help.
                 </p>
               </div>
             </div>
@@ -600,7 +740,7 @@ export function OverviewDashboard() {
           </div>
         </div>
 
-        {/* Upcoming Events Panel */}
+        {/* Upcoming Events Panel (live Calendar data) */}
         <div className="lg:col-span-4 rounded-2xl bg-[#151322]/95 border border-[#29233C] p-5 flex flex-col justify-between shadow-[0_8px_24px_-8px_rgba(9,8,18,0.55)]">
           <div>
             <div className="flex items-center justify-between gap-2 mb-5">
@@ -619,45 +759,55 @@ export function OverviewDashboard() {
               </Link>
             </div>
 
-            <div className="relative pl-5 space-y-5">
-              {/* Vertical timeline line */}
-              <div
-                className="absolute left-[4px] top-2 bottom-2 w-[2px] bg-[#29233C]"
-                aria-hidden="true"
-              />
-              {events.map((ev) => {
-                const badgeClass =
-                  ev.badgeVariant === "purple"
-                    ? "bg-[#A020F0]/25 text-[#D8B4FE] border-[#A020F0]/40"
-                    : ev.badgeVariant === "blue"
-                      ? "bg-[#258CFF]/20 text-[#7CC0FF] border-[#258CFF]/40"
-                      : "bg-[#1B172A] text-[#A6A0B7] border-[#29233C]";
-                return (
-                  <div key={ev.id} className="relative flex items-start justify-between gap-3">
-                    <span
-                      className="absolute -left-5 top-1.5 w-2.5 h-2.5 rounded-full ring-4 ring-[#151322]"
-                      style={{ backgroundColor: ev.dotColor }}
-                      aria-hidden="true"
-                    />
-                    <div className="min-w-0">
-                      <div className="text-[13.5px] font-semibold text-[#F7F4FC] truncate">
-                        {ev.title}
+            {events.length > 0 ? (
+              <div className="relative pl-5 space-y-5">
+                <div className="absolute left-[4px] top-2 bottom-2 w-[2px] bg-[#29233C]" aria-hidden="true" />
+                {events.map((ev) => {
+                  const badgeClass =
+                    ev.badgeVariant === "purple"
+                      ? "bg-[#A020F0]/25 text-[#D8B4FE] border-[#A020F0]/40"
+                      : ev.badgeVariant === "blue"
+                        ? "bg-[#258CFF]/20 text-[#7CC0FF] border-[#258CFF]/40"
+                        : "bg-[#1B172A] text-[#A6A0B7] border-[#29233C]";
+                  return (
+                    <div key={ev.id} className="relative flex items-start justify-between gap-3">
+                      <span
+                        className="absolute -left-5 top-1.5 w-2.5 h-2.5 rounded-full ring-4 ring-[#151322]"
+                        style={{ backgroundColor: ev.dotColor }}
+                        aria-hidden="true"
+                      />
+                      <div className="min-w-0">
+                        <div className="text-[13.5px] font-semibold text-[#F7F4FC] truncate">
+                          {ev.title}
+                        </div>
+                        <div className="text-[12px] text-[#A6A0B7] mt-0.5">{ev.timeText}</div>
                       </div>
-                      <div className="text-[12px] text-[#A6A0B7] mt-0.5">{ev.timeText}</div>
+                      <span className={`shrink-0 px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${badgeClass}`}>
+                        {ev.badge}
+                      </span>
                     </div>
-                    <span
-                      className={`shrink-0 px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${badgeClass}`}
-                    >
-                      {ev.badge}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="py-6 text-center">
+                <p className="text-[13px] text-[#A6A0B7]">
+                  {loadingData ? "Checking your calendar…" : "No upcoming events for today."}
+                </p>
+                {!loadingData && (
+                  <Link
+                    to="/calendar"
+                    className="inline-flex items-center gap-1 text-[12px] text-[#C13BFF] hover:underline mt-2"
+                  >
+                    Open Calendar <ArrowRight className="w-3 h-3" />
+                  </Link>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Recent Activity Panel */}
+        {/* Recent Activity Panel (live DB activity) */}
         <div className="lg:col-span-3 rounded-2xl bg-[#151322]/95 border border-[#29233C] p-5 shadow-[0_8px_24px_-8px_rgba(9,8,18,0.55)]">
           <div className="flex items-center gap-2.5 mb-4">
             <div className="w-7 h-7 rounded-lg bg-[#743BDA]/20 flex items-center justify-center text-[#C13BFF]">
@@ -666,23 +816,31 @@ export function OverviewDashboard() {
             <h2 className="text-[15px] font-semibold text-[#F7F4FC]">Recent Activity</h2>
           </div>
 
-          <div className="space-y-3.5">
-            {activities.map((act) => (
-              <div key={act.id} className="flex items-start gap-3">
-                <ActivityIcon kind={act.kind} />
-                <div className="min-w-0">
-                  <div className="text-[13px] font-medium text-[#F7F4FC] leading-snug">
-                    {act.title}
+          {activities.length > 0 ? (
+            <div className="space-y-3.5">
+              {activities.map((act) => (
+                <div key={act.id} className="flex items-start gap-3">
+                  <ActivityIcon kind={act.kind} />
+                  <div className="min-w-0">
+                    <div className="text-[13px] font-medium text-[#F7F4FC] leading-snug truncate">
+                      {act.title}
+                    </div>
+                    <div className="text-[11.5px] text-[#A6A0B7] mt-0.5">{act.timeAgo}</div>
                   </div>
-                  <div className="text-[11.5px] text-[#A6A0B7] mt-0.5">{act.timeAgo}</div>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <div className="py-6 text-center">
+              <p className="text-[13px] text-[#A6A0B7]">
+                {loadingData ? "Loading activity…" : "No recent activity yet."}
+              </p>
+            </div>
+          )}
         </div>
       </section>
 
-      {/* Bottom AI Chat Section */}
+      {/* Bottom AI Chat Launcher Section */}
       <section className="relative z-10 rounded-2xl border border-[#46297A]/80 bg-gradient-to-r from-[#1A1330] via-[#151322] to-[#1B1332] p-4 shadow-[0_0_32px_rgba(160,32,240,0.12)]">
         <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3">
           <div className="flex items-center gap-3">

@@ -1,6 +1,12 @@
-// Mr. Cisco — Executive Agent (tool-calling + RAG + persistent memory)
+// Mr. Cisco — Executive Agent (tool-calling + RAG + persistent memory + multi-provider streaming + automatic failover)
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { runAgentLoop } from "../_shared/agent-tools.ts";
+import {
+  getProviderExecutionChain,
+  PROVIDER_REGISTRY,
+  type AiProviderName,
+  type ResolvedEndpoint,
+} from "../_shared/ai-provider.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -64,17 +70,13 @@ async function embedQuery(text: string, apiKey: string): Promise<number[] | null
   } catch { return null; }
 }
 
-async function summarizeOldMessages(messages: any[], apiKey: string, useGroq: boolean): Promise<string> {
+async function summarizeOldMessages(messages: any[], ep: ResolvedEndpoint): Promise<string> {
   const text = messages.map((m: any) => `${m.role}: ${m.content}`).join("\n");
-  const url = useGroq
-    ? "https://api.groq.com/openai/v1/chat/completions"
-    : "https://ai.gateway.lovable.dev/v1/chat/completions";
-  const model = useGroq ? "llama-3.3-70b-versatile" : "google/gemini-2.5-flash";
-  const resp = await fetch(url, {
+  const resp = await fetch(ep.url, {
     method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    headers: ep.headers,
     body: JSON.stringify({
-      model,
+      model: ep.model,
       messages: [
         { role: "system", content: "Summarize the following conversation in 4-6 bullet points capturing key facts, decisions, and unresolved threads. Be terse." },
         { role: "user", content: text },
@@ -86,16 +88,12 @@ async function summarizeOldMessages(messages: any[], apiKey: string, useGroq: bo
   return data.choices?.[0]?.message?.content ?? "";
 }
 
-async function generateTitle(firstUserMessage: string, apiKey: string, useGroq: boolean): Promise<string> {
-  const url = useGroq
-    ? "https://api.groq.com/openai/v1/chat/completions"
-    : "https://ai.gateway.lovable.dev/v1/chat/completions";
-  const model = useGroq ? "llama-3.3-70b-versatile" : "google/gemini-2.5-flash";
-  const resp = await fetch(url, {
+async function generateTitle(firstUserMessage: string, ep: ResolvedEndpoint): Promise<string> {
+  const resp = await fetch(ep.url, {
     method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    headers: ep.headers,
     body: JSON.stringify({
-      model,
+      model: ep.model,
       messages: [
         { role: "system", content: "Generate a 3-6 word title for this chat. Plain text, no quotes, no punctuation at end." },
         { role: "user", content: firstUserMessage.slice(0, 500) },
@@ -118,16 +116,33 @@ function needsDocumentContext(text: string): boolean {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
+  if (req.method === "GET") {
+    const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+    const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const admin = createClient(SUPABASE_URL, SERVICE_KEY);
+    const authHeader = req.headers.get("Authorization");
+    let userId = "";
+    if (authHeader) {
+      const { data } = await admin.auth.getUser(authHeader.replace("Bearer ", ""));
+      userId = data?.user?.id || "";
+    }
+    const chain = await getProviderExecutionChain(admin, userId);
+    return new Response(JSON.stringify({
+      configured: chain.length > 0,
+      activeProvider: chain[0]?.provider || null,
+      model: chain[0]?.model || null,
+      availableProviders: chain.map(c => c.provider),
+    }), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
   try {
-    const { messages: clientMessages, conversation_id } = await req.json();
-    const GROQ_API_KEY = Deno.env.get("GROQ_API_KEY");
-    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
-    const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
+    const body = await req.json();
+    const { messages: clientMessages, conversation_id, stream = false, provider } = body;
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
     const SUPABASE_KEY = Deno.env.get("SUPABASE_PUBLISHABLE_KEY") ?? Deno.env.get("SUPABASE_ANON_KEY") ?? "";
-    const useGroq = !!GROQ_API_KEY;
-    const AI_KEY = GROQ_API_KEY ?? LOVABLE_API_KEY ?? "";
-    if (!AI_KEY) throw new Error("No AI API key configured (GROQ_API_KEY or LOVABLE_API_KEY)");
+    const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) {
@@ -139,6 +154,8 @@ Deno.serve(async (req) => {
     const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
       global: { headers: { Authorization: authHeader } },
     });
+    const admin = createClient(SUPABASE_URL, SERVICE_KEY);
+
     const { data: userData, error: userErr } = await supabase.auth.getUser();
     if (userErr || !userData.user) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
@@ -146,6 +163,26 @@ Deno.serve(async (req) => {
       });
     }
     const userId = userData.user.id;
+
+    if (body?.action === "status") {
+      const chain = await getProviderExecutionChain(admin, userId);
+      return new Response(JSON.stringify({
+        configured: chain.length > 0,
+        activeProvider: chain[0]?.provider || null,
+        model: chain[0]?.model || null,
+        availableProviders: chain.map(c => c.provider),
+      }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    const endpoints = await getProviderExecutionChain(admin, userId, provider);
+    if (endpoints.length === 0) {
+      return new Response(JSON.stringify({ error: "No AI provider configured. Please configure an AI provider in Settings." }), {
+        status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    const primaryEp = endpoints[0];
 
     if (!conversation_id) {
       return new Response(JSON.stringify({ error: "conversation_id required" }), {
@@ -194,8 +231,7 @@ Deno.serve(async (req) => {
     let summary = conversation.summary ?? "";
     if (allMsgs.length > KEEP + 5) {
       const older = allMsgs.slice(0, allMsgs.length - KEEP);
-      // Only re-summarize if there are notably more old msgs than last summary covered
-      const newSummary = await summarizeOldMessages(older, AI_KEY, useGroq);
+      const newSummary = await summarizeOldMessages(older, ep);
       if (newSummary) {
         summary = newSummary;
         await supabase.from("conversations").update({ summary }).eq("id", conversation_id);
@@ -247,12 +283,110 @@ Deno.serve(async (req) => {
     if (summary) sysParts.push(`\n[CONVERSATION SUMMARY SO FAR]\n${summary}`);
     if (docContext) sysParts.push(`\n${docContext}`);
 
+    const sysPrompt = sysParts.join("\n");
+
+    const finalizeConversation = async (content: string, tools: any[], prov: string, mod: string) => {
+      if (content) {
+        await supabase.from("chat_messages").insert({
+          user_id: userId, conversation_id, role: "assistant", content, metadata: { tools, provider: prov, model: mod },
+        });
+      }
+      const updates: any = { last_message_at: new Date().toISOString() };
+      if (!conversation.title_generated) {
+        try {
+          updates.title = await generateTitle(userMsg.content, primaryEp);
+          updates.title_generated = true;
+        } catch (e) {
+          console.error("title gen failed:", e);
+        }
+      }
+      await supabase.from("conversations").update(updates).eq("id", conversation_id);
+
+      // Increment usage stats in background
+      try {
+        const approxTokens = Math.ceil((userMsg.content.length + content.length) / 4);
+        await admin.rpc("increment_ai_usage", {
+          p_user_id: userId,
+          p_provider: prov,
+          p_tokens: approxTokens,
+        }).catch(async () => {
+          // Direct fallback update if RPC not present
+          const { data: cfg } = await admin
+            .from("ai_provider_configs")
+            .select("requests_count, tokens_used")
+            .eq("user_id", userId)
+            .eq("provider", prov)
+            .maybeSingle();
+          if (cfg) {
+            await admin
+              .from("ai_provider_configs")
+              .update({
+                requests_count: (cfg.requests_count || 0) + 1,
+                tokens_used: (cfg.tokens_used || 0) + approxTokens,
+                last_success_at: new Date().toISOString(),
+              })
+              .eq("user_id", userId)
+              .eq("provider", prov);
+          }
+        });
+      } catch (_) {}
+    };
+
+    if (stream) {
+      const encoder = new TextEncoder();
+      const readable = new ReadableStream({
+        async start(controller) {
+          const emit = (obj: Record<string, any>) => {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
+          };
+          try {
+            emit({ type: "status", provider: primaryEp.provider, model: primaryEp.model });
+            const result = await runAgentLoop({
+              endpoints,
+              systemPrompt: sysPrompt,
+              messages: recent,
+              supabase,
+              userId,
+              maxIterations: 6,
+              stream: true,
+              onToken: (token) => emit({ type: "token", content: token }),
+              onToolCall: (name) => emit({ type: "tool", name }),
+              onProviderChange: (p, m) => emit({ type: "status", provider: p, model: m, failover: true }),
+            });
+            await finalizeConversation(result.content, result.tools, result.provider, result.model);
+            emit({
+              type: "done",
+              content: result.content,
+              tools: result.tools,
+              provider: result.provider,
+              model: result.model,
+            });
+          } catch (e: any) {
+            emit({ type: "error", error: e?.message || "AI provider error", status: e?.status || 500 });
+          } finally {
+            controller.close();
+          }
+        },
+      });
+      return new Response(readable, {
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+        },
+      });
+    }
+
     let finalContent = "";
     let toolEvents: any[] = [];
+    let usedProvider = primaryEp.provider;
+    let usedModel = primaryEp.model;
+
     try {
       const result = await runAgentLoop({
-        apiKey: AI_KEY,
-        systemPrompt: sysParts.join("\n"),
+        endpoints,
+        systemPrompt: sysPrompt,
         messages: recent,
         supabase,
         userId,
@@ -260,34 +394,24 @@ Deno.serve(async (req) => {
       });
       finalContent = result.content;
       toolEvents = result.tools;
+      usedProvider = result.provider;
+      usedModel = result.model;
     } catch (e: any) {
-      const status = e?.status;
-      if (status === 429) return new Response(JSON.stringify({ error: "Rate limit reached. Please wait a moment." }), { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      if (status === 402) return new Response(JSON.stringify({ error: "AI credits exhausted. Add funds in Settings → Workspace → Usage." }), { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      return new Response(JSON.stringify({ error: "AI gateway error" }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-    }
-
-    // Persist assistant message
-    if (finalContent) {
-      await supabase.from("chat_messages").insert({
-        user_id: userId, conversation_id, role: "assistant", content: finalContent, metadata: { tools: toolEvents },
+      const status = e?.status || 500;
+      return new Response(JSON.stringify({ error: e?.message || "AI provider error" }), {
+        status,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    // Update conversation: bump last_message_at, generate title if first turn
-    const updates: any = { last_message_at: new Date().toISOString() };
-    if (!conversation.title_generated) {
-      try {
-        const newTitle = await generateTitle(userMsg.content, AI_KEY, useGroq);
-        updates.title = newTitle;
-        updates.title_generated = true;
-      } catch (e) {
-        console.error("title gen failed:", e);
-      }
-    }
-    await supabase.from("conversations").update(updates).eq("id", conversation_id);
+    await finalizeConversation(finalContent, toolEvents, usedProvider, usedModel);
 
-    return new Response(JSON.stringify({ content: finalContent, tools: toolEvents }), {
+    return new Response(JSON.stringify({
+      content: finalContent,
+      tools: toolEvents,
+      provider: usedProvider,
+      model: usedModel,
+    }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {

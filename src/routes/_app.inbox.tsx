@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { AlertCircle, MessageSquare, ListPlus, RefreshCw, Mail, Sparkles, Loader2, X, Check, UserCheck, Bot, Send, PhoneCall } from "lucide-react";
 import { PageHeader, Card } from "@/components/ui/page";
 import { Switch } from "@/components/ui/switch";
@@ -481,7 +481,7 @@ function InboxPage() {
                 <div className="flex-1">
                   <div className="font-medium">Gmail isn't connected</div>
                   <div className="text-sm text-muted-foreground mt-1">
-                    Head to Settings → Integrations to connect your Google account. Once connected, your unread mail will show up here.
+                    Head to <Link to="/settings" className="text-primary underline font-medium hover:text-primary/80">Settings → Connection Overview</Link> to connect your Google account. Once connected, your unread mail will show up here.
                   </div>
                 </div>
               </div>
