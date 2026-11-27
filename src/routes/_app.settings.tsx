@@ -5,7 +5,6 @@ import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { RefreshCw, Copy, Unlink, User } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
-import { AiProvidersSettings } from "@/components/settings/AiProvidersSettings";
 
 /* ── Types ── */
 type GoogleStatus = { connected: boolean; email?: string; scopes?: string[]; gmail_ok?: boolean; gmail_compose?: boolean; calendar_ok?: boolean };
@@ -1114,11 +1113,6 @@ function SettingsPage() {
             </div>
           )}
         </GlassCard>
-      </div>
-
-      {/* AI Provider Configuration & Management */}
-      <div className="mb-8">
-        <AiProvidersSettings />
       </div>
 
       {/* Business Knowledge Base & AI Brain */}

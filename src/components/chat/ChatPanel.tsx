@@ -355,12 +355,7 @@ export function ChatPanel() {
         <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold">Mr. Cisco</div>
           <div className="text-[11px] text-muted-foreground truncate">
-            {currentConvo?.title ?? "Executive Agent"} ·{" "}
-            {aiStatus === null
-              ? "connecting…"
-              : aiStatus.configured
-              ? `online (${aiStatus.activeProvider})`
-              : "AI API not configured"}
+            {currentConvo?.title ?? "Executive Agent"} · online
           </div>
         </div>
 
