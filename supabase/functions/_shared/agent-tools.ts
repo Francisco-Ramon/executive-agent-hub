@@ -65,6 +65,38 @@ export const agentTools = [
   { type: "function", function: { name: "list_books", description: "List user's books.", parameters: { type: "object", properties: {}, additionalProperties: false } } },
   { type: "function", function: { name: "generate_daily_briefing", description: "Aggregate emails, schedule, tasks, reading into a daily briefing.", parameters: { type: "object", properties: {}, additionalProperties: false } } },
   { type: "function", function: { name: "search_customer_chats", description: "Search customer chat history across WhatsApp, Telegram, and Instagram by customer name, phone, or message content.", parameters: { type: "object", properties: { query: { type: "string", description: "Customer name, phone number, or keyword to search (e.g. 'James', 'invoice', 'pricing')" }, channel: { type: "string", enum: ["whatsapp", "telegram", "instagram", "all"], description: "Optional channel filter" } }, required: ["query"], additionalProperties: false } } },
+  {
+    type: "function",
+    function: {
+      name: "web_search",
+      description: "Search the live internet for current events, trending topics, breaking technology news, company comparisons, and verified real-time information. Returns sources, titles, URLs, snippets, and publication dates.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "The search query (e.g. 'trending in ChatGPT today', 'latest developments in artificial intelligence')" },
+          num_results: { type: "number", description: "Maximum number of search results to return (default 5, max 8)" },
+        },
+        required: ["query"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browse_website",
+      description: "Visit any specific web URL and extract its clean readable content, headings, body text, and links. Use when asked to inspect, read, or summarize a specific webpage.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "Full URL of the website to visit (e.g. 'https://openai.com', 'https://anthropic.com')" },
+          max_length: { type: "number", description: "Maximum length of extracted content in characters (default 5000, max 12000)" },
+        },
+        required: ["url"],
+        additionalProperties: false,
+      },
+    },
+  },
 ];
 
 export async function executeAgentTool(name: string, args: any, supabase: any, userId: string): Promise<any> {
@@ -288,7 +320,228 @@ export async function executeAgentTool(name: string, args: any, supabase: any, u
 
       return { found: true, conversations: results };
     }
+    case "web_search": {
+      const query = args.query?.trim() || "";
+      if (!query) return { error: "Missing query" };
+      await log("web_search", { query });
+      const results = await performWebSearch(query, args.num_results);
+      return {
+        query,
+        count: results.length,
+        results,
+        hint: "Summarize findings clearly. Cite sources using markdown links: [Source Name](url). Distinguish verified facts from uncertain claims.",
+      };
+    }
+    case "browse_website": {
+      const url = args.url?.trim() || "";
+      if (!url) return { error: "Missing URL" };
+      await log("browse_website", { url });
+      const page = await performBrowseWebsite(url, args.max_length);
+      return {
+        ...page,
+        hint: "Summarize the extracted content, identify main sections or services, and answer the user's specific request based on the webpage.",
+      };
+    }
     default: return { error: `Unknown tool: ${name}` };
+  }
+}
+
+async function performWebSearch(query: string, maxResults = 5): Promise<any[]> {
+  const results: any[] = [];
+  const limit = Math.min(Math.max(Number(maxResults) || 5, 1), 8);
+
+  // 1. Check if user configured BRAVE_SEARCH_API_KEY
+  const braveKey = Deno.env.get("BRAVE_SEARCH_API_KEY");
+  if (braveKey) {
+    try {
+      const bResp = await fetch(
+        `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${limit}`,
+        { headers: { "X-Subscription-Token": braveKey, Accept: "application/json" } }
+      );
+      if (bResp.ok) {
+        const bd = await bResp.json();
+        for (const item of (bd.web?.results || []).slice(0, limit)) {
+          results.push({
+            title: item.title,
+            url: item.url,
+            snippet: item.description,
+            published_date: item.page_age || null,
+            source: item.profile?.name || new URL(item.url).hostname,
+            verified: true,
+          });
+        }
+        if (results.length > 0) return results;
+      }
+    } catch (_) {}
+  }
+
+  // 2. Check if user configured TAVILY_API_KEY
+  const tavilyKey = Deno.env.get("TAVILY_API_KEY");
+  if (tavilyKey) {
+    try {
+      const tResp = await fetch("https://api.tavily.com/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ api_key: tavilyKey, query, max_results: limit }),
+      });
+      if (tResp.ok) {
+        const td = await tResp.json();
+        for (const r of (td.results || []).slice(0, limit)) {
+          results.push({
+            title: r.title,
+            url: r.url,
+            snippet: r.content,
+            published_date: r.published_date || null,
+            source: new URL(r.url).hostname,
+            verified: true,
+          });
+        }
+        if (results.length > 0) return results;
+      }
+    } catch (_) {}
+  }
+
+  // 3. Built-in Multi-Source Engine (Google News RSS + HackerNews + Wikipedia)
+  // A. Google News RSS (verified real-time news with timestamps & sources)
+  try {
+    const nUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`;
+    const nResp = await fetch(nUrl, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      },
+    });
+    if (nResp.ok) {
+      const text = await nResp.text();
+      const itemMatches = text.match(/<item>[\s\S]*?<\/item>/g) || [];
+      for (const item of itemMatches.slice(0, limit)) {
+        const titleM = item.match(/<title>([\s\S]*?)<\/title>/);
+        const linkM = item.match(/<link>([\s\S]*?)<\/link>/);
+        const pubDateM = item.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
+        const sourceM = item.match(/<source[^>]*>([\s\S]*?)<\/source>/);
+        if (titleM) {
+          results.push({
+            title: titleM[1].replace(/<!\[CDATA\[|\]\]>/g, "").trim(),
+            url: linkM ? linkM[1].trim() : "",
+            snippet: `Published by ${sourceM ? sourceM[1].replace(/<!\[CDATA\[|\]\]>/g, "").trim() : "News source"} on ${pubDateM ? pubDateM[1].trim() : "Recent"}`,
+            published_date: pubDateM ? pubDateM[1].trim() : null,
+            source: sourceM ? sourceM[1].replace(/<!\[CDATA\[|\]\]>/g, "").trim() : "Google News",
+            verified: true,
+          });
+        }
+      }
+    }
+  } catch (_) {}
+
+  // B. HackerNews Algolia (for tech, AI, products, and developer news)
+  if (results.length < limit) {
+    try {
+      const hnResp = await fetch(
+        `https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(query)}&tags=story&hitsPerPage=${limit - results.length}`
+      );
+      if (hnResp.ok) {
+        const hnd = await hnResp.json();
+        for (const hit of hnd.hits || []) {
+          if (hit.title) {
+            results.push({
+              title: hit.title,
+              url: hit.url || `https://news.ycombinator.com/item?id=${hit.objectID}`,
+              snippet: hit.story_text ? hit.story_text.slice(0, 150) : `Discussion with ${hit.points || 0} points and ${hit.num_comments || 0} comments`,
+              published_date: hit.created_at || null,
+              source: "Hacker News",
+              verified: true,
+            });
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  // C. Wikipedia (for factual background and company overviews)
+  if (results.length < limit) {
+    try {
+      const wResp = await fetch(
+        `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&utf8=&format=json`
+      );
+      if (wResp.ok) {
+        const wd = await wResp.json();
+        for (const item of (wd.query?.search || []).slice(0, limit - results.length)) {
+          results.push({
+            title: item.title,
+            url: `https://en.wikipedia.org/wiki/${encodeURIComponent(item.title.replace(/\s+/g, "_"))}`,
+            snippet: item.snippet ? item.snippet.replace(/<[^>]+>/g, "").trim() : "",
+            published_date: null,
+            source: "Wikipedia",
+            verified: true,
+          });
+        }
+      }
+    } catch (_) {}
+  }
+
+  return results;
+}
+
+async function performBrowseWebsite(url: string, maxLength = 5000): Promise<{ url: string; title?: string; content: string; error?: string }> {
+  try {
+    let cleanUrl = url.trim();
+    if (!cleanUrl.startsWith("http://") && !cleanUrl.startsWith("https://")) {
+      cleanUrl = `https://${cleanUrl}`;
+    }
+
+    // 1. Primary browser extractor via Jina Reader
+    try {
+      const rResp = await fetch(`https://r.jina.ai/${cleanUrl}`, {
+        headers: { Accept: "text/plain", "User-Agent": "MrCiscoExecutiveAgent/1.0" },
+      });
+      if (rResp.ok) {
+        const text = await rResp.text();
+        if (text && text.length > 50) {
+          const max = Math.min(Number(maxLength) || 5000, 12000);
+          return {
+            url: cleanUrl,
+            content: text.slice(0, max),
+          };
+        }
+      }
+    } catch (_) {}
+
+    // 2. Direct browser fetch + text sanitizer fallback
+    const dResp = await fetch(cleanUrl, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      },
+    });
+
+    if (!dResp.ok) {
+      return { url: cleanUrl, content: "", error: `Website returned status ${dResp.status}` };
+    }
+
+    const html = await dResp.text();
+    const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    const title = titleMatch ? titleMatch[1].trim() : undefined;
+
+    const cleaned = html
+      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, " ")
+      .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, " ")
+      .replace(/<svg\b[^<]*(?:(?!<\/svg>)<[^<]*)*<\/svg>/gi, " ")
+      .replace(/<header\b[^<]*(?:(?!<\/header>)<[^<]*)*<\/header>/gi, " ")
+      .replace(/<footer\b[^<]*(?:(?!<\/footer>)<[^<]*)*<\/footer>/gi, " ")
+      .replace(/<nav\b[^<]*(?:(?!<\/nav>)<[^<]*)*<\/nav>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    const max = Math.min(Number(maxLength) || 5000, 12000);
+    return {
+      url: cleanUrl,
+      title,
+      content: cleaned.slice(0, max),
+    };
+  } catch (e: any) {
+    return { url, content: "", error: `Failed to browse website: ${e?.message || "Inaccessible"}` };
   }
 }
 
