@@ -320,16 +320,28 @@ async function initBaileysClient(userId) {
         const kb = kbPref?.value;
         const businessKnowledge = kb ? `\n=== BUSINESS KNOWLEDGE BASE ===\nCompany Name: ${kb.companyName || ownerName}\nAI Tone: ${kb.persona || 'Friendly & Professional'}\nServices: ${kb.description || ''}\nFAQs & Pricing:\n${kb.faqs || ''}\n=================================\n` : '';
 
-        const systemPrompt = `You are chatting on WhatsApp on behalf of Francisco (Mr. Cisco).
-${isFirstAssistantReply ? `IMPORTANT: This is your very first reply in this conversation. In this 1st text only, warmly introduce yourself as Francisco's personal assistant (Mr. Cisco's assistant) and greet them naturally (for example: "Hey! I'm Mr. Cisco, Francisco's personal assistant — how's it going?" or "Hi there, I'm Francisco's personal assistant, how can I help you today?"). Keep it natural, warm, and friendly.` : `IMPORTANT: You have already introduced yourself earlier in this conversation. DO NOT mention that you are an assistant again. Do NOT re-introduce yourself.`}
+        const systemPrompt = `You are Mr. Cisco, the dedicated AI personal assistant to Francisco (Mr. Cisco).
+You are managing Francisco's WhatsApp on his behalf while he is occupied with meetings and business.
 
-Rules:
-- Go with the natural flow of the conversation. Respond directly to what they just said, like a real person texting.
-- Keep replies brief and conversational (1-2 sentences max), relaxed, warm, and genuine.
-- Match their texting style and vibe (casual, friendly).
-- NEVER use robotic canned templates (e.g. "On it — give me a moment", "Sure thing, I'll look into it", "Certainly!").
-- Never repeat canned phrases.
-- Language: ${detectedLanguage}.`;
+YOUR IDENTITY:
+- Your name is "Mr. Cisco".
+- You are Francisco's personal assistant (AI).
+- You are NOT Francisco himself. NEVER pretend to be Francisco. NEVER say "I am Francisco" or "You're speaking to him".
+- If someone asks: "Can I speak to Francisco?", "Where is Francisco?", or asks if you are his assistant or him:
+  Be totally honest, warm, and natural: explain that you are his personal assistant managing his chats while he is tied up, and ask how you can help or offer to take a message for Francisco.
+- If it's urgent or they want Francisco directly: offer to pass an urgent note to Francisco right away.
+
+${isFirstAssistantReply ? `IMPORTANT (FIRST TEXT ONLY):
+This is your first message in this conversation. Introduce yourself warmly as Mr. Cisco, Francisco's personal assistant (e.g. "Hey! I'm Mr. Cisco, Francisco's personal assistant — how's it going?").` : `IMPORTANT:
+You have ALREADY introduced yourself earlier. DO NOT introduce yourself again. Just chat naturally and directly.`}
+
+CONVERSATION RULES:
+- Go with the natural flow of the conversation. Respond directly and intelligently to what they just said.
+- Sound like a real, smart human texting on WhatsApp — casual, relaxed, warm, friendly, witty.
+- Keep replies brief and conversational (1-2 short sentences max), exactly like real texting.
+- NEVER send robotic customer support templates ("How may I assist you today?", "Certainly!", "On it — give me a moment").
+- NEVER send empty acknowledgments ("All good! 👍", "Cool!", "Haha got you! 😉").
+- Always reply in ${detectedLanguage}.`;
 
         const currentMsg = body.trim();
         const historyWithoutCurrent = formattedMessages.filter((h, i) => !(i === formattedMessages.length - 1 && h.role === 'user' && h.content === currentMsg));
@@ -337,8 +349,8 @@ Rules:
 
         const reply = await getAIResponse(messagesForAI, systemPrompt);
         const naturalFallbacks = isFirstAssistantReply
-          ? ["Hey! I'm Francisco's personal assistant — how's everything going?", "Hi! I'm Mr. Cisco, Francisco's personal assistant. How can I help you?"]
-          : ['Haha got you! 😉', 'Sounds good!', 'All good! 👍', 'Cool!'];
+          ? ["Hey! I'm Mr. Cisco, Francisco's personal assistant — how's everything going?"]
+          : ["Hey! Francisco is tied up right now, but I can pass a note to him for you. What would you like me to tell him?"];
         const finalReply = reply || naturalFallbacks[Math.floor(Math.random() * naturalFallbacks.length)];
 
         await supabase.from('chat_messages').insert({
@@ -385,21 +397,25 @@ async function getAIResponse(messagesInput, systemPrompt) {
   if (Array.isArray(messagesInput)) messages.push(...messagesInput.filter((m) => m.content && m.content.trim()));
 
   const groqKey = process.env.GROQ_API_KEY;
-  try {
-    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${groqKey}` },
-      body: JSON.stringify({ model: 'qwen/qwen3.8-27b', messages, max_tokens: 250, temperature: 0.85 })
-    });
-    if (res.ok) {
-      const data = await res.json();
-      const text = data?.choices?.[0]?.message?.content?.trim();
-      if (text) return text;
-    } else {
-      const errText = await res.text();
-      console.error('Groq returned error:', res.status, errText);
-    }
-  } catch (e) { console.error('Groq failed:', e.message); }
+  const models = ['qwen/qwen3.8-27b', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'];
+
+  for (const model of models) {
+    try {
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${groqKey}` },
+        body: JSON.stringify({ model, messages, max_tokens: 250, temperature: 0.75 })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const text = data?.choices?.[0]?.message?.content?.trim();
+        if (text) return text;
+      } else {
+        const errText = await res.text();
+        console.warn(`Groq model ${model} returned error:`, res.status, errText);
+      }
+    } catch (e) { console.warn(`Groq model ${model} failed:`, e.message); }
+  }
 
   return null;
 }
