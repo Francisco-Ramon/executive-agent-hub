@@ -246,7 +246,7 @@ Deno.serve(async (req) => {
     let summary = conversation.summary ?? "";
     if (allMsgs.length > KEEP + 5) {
       const older = allMsgs.slice(0, allMsgs.length - KEEP);
-      const newSummary = await summarizeOldMessages(older, ep);
+      const newSummary = await summarizeOldMessages(older, primaryEp);
       if (newSummary) {
         summary = newSummary;
         await supabase.from("conversations").update({ summary }).eq("id", conversation_id);
