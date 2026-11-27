@@ -654,16 +654,6 @@ function SettingsPage() {
           setWaStatus({ linked: true, connection: { whatsapp_phone: d.phone, whatsapp_name: d.name, linked_at: new Date().toISOString(), last_message_at: null, status: "active" } });
           setWaLoading(false);
           return;
-        } else {
-          setWaStatus({
-            linked: false,
-            authenticating: !!d.authenticating,
-            connection: null,
-            pendingQr: d.pendingQr || null,
-            pairingCode: d.pairingCode || null
-          });
-          setWaLoading(false);
-          return;
         }
       }
     } catch {}

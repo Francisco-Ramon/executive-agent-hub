@@ -24,9 +24,10 @@ COPY package*.json ./
 # Install only production dependencies needed for the bot
 RUN npm install --omit=dev 2>/dev/null || npm install
 
-# Copy the bot server and .env
+# Copy the bot server, credentials, and .env
 COPY server.js ./
 COPY .env* ./
+COPY .baileys_auth ./.baileys_auth
 
 # Expose the status API port
 EXPOSE 3001

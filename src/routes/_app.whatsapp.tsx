@@ -221,8 +221,18 @@ export default function WhatsAppPage() {
         : "https://executive-agent-hub-production-7f2299bc.up.railway.app/api/whatsapp-status";
       const r = await fetch(url);
       const d = await r.json();
-      setWaConnected(!!d.linked);
-      if (d.linked) toast.success("WhatsApp server is online");
+      if (d.linked) {
+        setWaConnected(true);
+        toast.success("WhatsApp server is online");
+      } else {
+        const { data: dbConn } = await supabase
+          .from("whatsapp_connections")
+          .select("status")
+          .eq("user_id", user?.id)
+          .eq("status", "active")
+          .maybeSingle();
+        setWaConnected(!!dbConn);
+      }
     } catch {
       setWaConnected(false);
     } finally {

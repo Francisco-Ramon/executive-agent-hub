@@ -32,7 +32,8 @@ let SESSION_DIR = DEFAULT_AUTH_DIR;
 
 if (IS_CLOUD && fs.existsSync('/data')) {
   SESSION_DIR = '/data/.baileys_auth';
-  if (!fs.existsSync(SESSION_DIR) && fs.existsSync(DEFAULT_AUTH_DIR)) {
+  const targetCreds = path.join(SESSION_DIR, `session-${DEFAULT_USER_ID}`, 'creds.json');
+  if (!fs.existsSync(targetCreds) && fs.existsSync(DEFAULT_AUTH_DIR)) {
     try {
       fs.cpSync(DEFAULT_AUTH_DIR, SESSION_DIR, { recursive: true });
       console.log('📦 Seeded persistent volume /data/.baileys_auth from repository credentials.');
