@@ -67,8 +67,8 @@ function cleanChromiumLocks(dir) {
 cleanChromiumLocks(SESSION_DIR);
 
 // Supabase Client
-const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://xzufkruggqajucuhxtik.supabase.co';
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_PUBLISHABLE_KEY;
+const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://mvuvelhinkrplfpnroth.supabase.co';
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || 'sb_secret_5pB6h2Um1rvSnJwq-DV6SA_CVlv1R93';
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Express HTTP API
@@ -78,7 +78,7 @@ app.use(express.json());
 
 // Multi-Session Manager Map: userId -> { client, state, initPromise }
 const userSessions = new Map();
-const DEFAULT_USER_ID = 'e231f87d-c466-45ab-8e16-b1e2b0984c1d';
+const DEFAULT_USER_ID = '73573af4-8770-4571-a442-61eabfd21f15';
 
 function getSessionState(userId) {
   const uid = userId || DEFAULT_USER_ID;
@@ -327,7 +327,12 @@ function initClientForUser(userId) {
   userSessions.set(userId, sessionObj);
 
   client.on('qr', (qr) => {
-    console.log(`📡 QR code generated for user ${userId}`);
+    console.log(`\n==================================================`);
+    console.log(`📡 SCAN THIS QR CODE WITH YOUR WHATSAPP TO CONNECT:`);
+    console.log(`==================================================\n`);
+    try {
+      qrcodeTerminal.generate(qr, { small: true });
+    } catch (_) {}
     state.ready = false;
     state.authenticating = false;
     state.pendingQr = qr;
@@ -497,12 +502,12 @@ async function getAIResponse(messagesInput, systemPrompt) {
   if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
   if (Array.isArray(messagesInput)) messages.push(...messagesInput.filter((m) => m.content && m.content.trim()));
 
-  const groqKey = process.env.GROQ_API_KEY || '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';
+  const groqKey = process.env.GROQ_API_KEY || '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';
   try {
     const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${groqKey}` },
-      body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages, max_tokens: 300, temperature: 0.9 })
+      body: JSON.stringify({ model: 'qwen/qwen3.8-27b', messages, max_tokens: 300, temperature: 0.9 })
     });
     if (res.ok) {
       const data = await res.json();
