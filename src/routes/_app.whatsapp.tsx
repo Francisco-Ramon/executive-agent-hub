@@ -166,7 +166,7 @@ export default function WhatsAppPage() {
 
     setSending(true);
     try {
-      const res = await fetch("https://mr-cisco-whatsapp-production.up.railway.app/api/send-message", {
+      const res = await fetch("https://executive-agent-hub-production-7f2299bc.up.railway.app/api/send-message", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -217,8 +217,8 @@ export default function WhatsAppPage() {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       const url = user
-        ? `https://mr-cisco-whatsapp-production.up.railway.app/api/whatsapp-status?userId=${encodeURIComponent(user.id)}`
-        : "https://mr-cisco-whatsapp-production.up.railway.app/api/whatsapp-status";
+        ? `https://executive-agent-hub-production-7f2299bc.up.railway.app/api/whatsapp-status?userId=${encodeURIComponent(user.id)}`
+        : "https://executive-agent-hub-production-7f2299bc.up.railway.app/api/whatsapp-status";
       const r = await fetch(url);
       const d = await r.json();
       setWaConnected(!!d.linked);

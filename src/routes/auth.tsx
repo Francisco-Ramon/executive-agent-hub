@@ -66,7 +66,7 @@ function AuthPage() {
       if (mode === "signup") {
         // 1. Register auto-confirmed user via backend API to bypass email rate limits
         try {
-          const regRes = await fetch("https://mr-cisco-whatsapp-production.up.railway.app/api/register", {
+          const regRes = await fetch("https://executive-agent-hub-production-7f2299bc.up.railway.app/api/register", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ email, password, name }),

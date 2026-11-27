@@ -647,7 +647,7 @@ function SettingsPage() {
     try {
       const { data: { user: u } } = await supabase.auth.getUser();
       const userIdParam = u ? `?userId=${u.id}` : "";
-      const res = await fetch(`https://mr-cisco-whatsapp-production.up.railway.app/api/whatsapp-status${userIdParam}`);
+      const res = await fetch(`https://executive-agent-hub-production-7f2299bc.up.railway.app/api/whatsapp-status${userIdParam}`);
       if (res.ok) {
         const d = await res.json();
         if (d.linked) {
@@ -776,7 +776,7 @@ function SettingsPage() {
     try {
       const { data: { user: u } } = await supabase.auth.getUser(); if (!u) return;
       await supabase.from("whatsapp_connections").update({ status: "unlinked" }).eq("user_id", u.id).eq("status", "active");
-      await fetch("https://mr-cisco-whatsapp-production.up.railway.app/api/reset-session", {
+      await fetch("https://executive-agent-hub-production-7f2299bc.up.railway.app/api/reset-session", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId: u.id })
       });
@@ -791,7 +791,7 @@ function SettingsPage() {
     setRequestingCode(true); setPairingCode(null);
     try {
       const { data: { user: u } } = await supabase.auth.getUser();
-      const res = await fetch("https://mr-cisco-whatsapp-production.up.railway.app/api/request-pairing-code", {
+      const res = await fetch("https://executive-agent-hub-production-7f2299bc.up.railway.app/api/request-pairing-code", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId: u?.id, phoneNumber: waPhone })
       });

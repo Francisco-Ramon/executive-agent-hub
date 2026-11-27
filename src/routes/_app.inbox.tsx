@@ -237,7 +237,7 @@ function InboxPage() {
     setSendingManual(true);
 
     try {
-      const res = await fetch("https://mr-cisco-whatsapp-production.up.railway.app/api/send-message", {
+      const res = await fetch("https://executive-agent-hub-production-7f2299bc.up.railway.app/api/send-message", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
