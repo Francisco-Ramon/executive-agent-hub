@@ -27,7 +27,20 @@ const IS_CLOUD = !!(process.env.RAILWAY_ENVIRONMENT || process.env.RENDER || pro
 console.log(`🏗️ Running in ${IS_CLOUD ? 'CLOUD' : 'LOCAL'} mode with Pure Baileys WebSocket`);
 
 const API_PORT = process.env.PORT || 3001;
-const SESSION_DIR = IS_CLOUD ? '/data/.baileys_auth' : './.baileys_auth';
+const DEFAULT_AUTH_DIR = path.resolve('./.baileys_auth');
+let SESSION_DIR = DEFAULT_AUTH_DIR;
+
+if (IS_CLOUD && fs.existsSync('/data')) {
+  SESSION_DIR = '/data/.baileys_auth';
+  if (!fs.existsSync(SESSION_DIR) && fs.existsSync(DEFAULT_AUTH_DIR)) {
+    try {
+      fs.cpSync(DEFAULT_AUTH_DIR, SESSION_DIR, { recursive: true });
+      console.log('📦 Seeded persistent volume /data/.baileys_auth from repository credentials.');
+    } catch (e) {
+      console.warn('Could not seed /data:', e.message);
+    }
+  }
+}
 
 if (!fs.existsSync(SESSION_DIR)) {
   fs.mkdirSync(SESSION_DIR, { recursive: true });
@@ -310,6 +323,15 @@ async function initBaileysClient(userId) {
 
   return sessionObj;
 }
+
+// Auto-start Baileys client on boot if session credentials exist
+setTimeout(() => {
+  const userAuthDir = path.join(SESSION_DIR, `session-${DEFAULT_USER_ID}`);
+  if (fs.existsSync(userAuthDir) && fs.existsSync(path.join(userAuthDir, 'creds.json'))) {
+    console.log(`🚀 Auto-starting Baileys client for ${DEFAULT_USER_ID} from existing credentials...`);
+    initBaileysClient(DEFAULT_USER_ID);
+  }
+}, 3000);
 
 function detectLanguage(text) {
   if (!text) return 'English';
