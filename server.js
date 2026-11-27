@@ -242,7 +242,23 @@ async function initBaileysClient(userId) {
       setTimeout(() => processedMsgIds.delete(msgId), 60000);
 
       const fromJid = msg.key.remoteJid;
-      if (fromJid.endsWith('@g.us')) continue;
+      // STRICT FILTER: Never process or reply to groups, communities, broadcasts, or newsletters
+      if (
+        !fromJid ||
+        fromJid.endsWith('@g.us') ||
+        fromJid.includes('@g.us') ||
+        fromJid.endsWith('@broadcast') ||
+        fromJid.includes('@broadcast') ||
+        fromJid.endsWith('@newsletter') ||
+        fromJid.includes('@newsletter') ||
+        fromJid.includes('@temp') ||
+        Boolean(msg.key?.participant) ||
+        Boolean(msg.participant) ||
+        Boolean(msg.broadcast) ||
+        fromJid === 'status@broadcast'
+      ) {
+        continue;
+      }
 
       const fromPhone = fromJid.replace('@s.whatsapp.net', '').replace('@lid', '');
       const body = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
@@ -294,18 +310,33 @@ async function initBaileysClient(userId) {
         const formattedMessages = (history ?? []).map((h) => ({ role: h.role === 'assistant' ? 'assistant' : 'user', content: h.content }));
         const detectedLanguage = detectLanguage(body);
 
+        // Check if this is the first assistant message in this conversation
+        const assistantMsgCount = (history ?? []).filter((h) => h.role === 'assistant').length;
+        const isFirstAssistantReply = assistantMsgCount === 0;
+
         const { data: kbPref } = await supabase.from('preferences').select('value').eq('user_id', userId).eq('key', 'business_knowledge_base').maybeSingle();
         const kb = kbPref?.value;
         const businessKnowledge = kb ? `\n=== BUSINESS KNOWLEDGE BASE ===\nCompany Name: ${kb.companyName || ownerName}\nAI Tone: ${kb.persona || 'Friendly & Professional'}\nServices: ${kb.description || ''}\nFAQs & Pricing:\n${kb.faqs || ''}\n=================================\n` : '';
 
-        const systemPrompt = `You are Mr. Cisco, the AI assistant of ${kb?.companyName || ownerName}.\n\nRules:\n- Reply ONLY to what the person just said.\n- Sound like a real human texting — casual, warm, short (1-3 sentences).\n- AI Tone: ${kb?.persona || 'Friendly & Professional'}.\n- Never use bullet points. Never start with "Certainly" or "Of course".\n- Language: ${detectedLanguage}.\n${businessKnowledge}`;
+        const systemPrompt = `You are chatting on WhatsApp on behalf of Francisco (Mr. Cisco).
+${isFirstAssistantReply ? `IMPORTANT: This is your very first reply in this conversation. In this 1st text only, warmly introduce yourself as Francisco's personal assistant (Mr. Cisco's assistant) and greet them naturally (for example: "Hey! I'm Mr. Cisco, Francisco's personal assistant — how's it going?" or "Hi there, I'm Francisco's personal assistant, how can I help you today?"). Keep it natural, warm, and friendly.` : `IMPORTANT: You have already introduced yourself earlier in this conversation. DO NOT mention that you are an assistant again. Do NOT re-introduce yourself.`}
+
+Rules:
+- Go with the natural flow of the conversation. Respond directly to what they just said, like a real person texting.
+- Keep replies brief and conversational (1-2 sentences max), relaxed, warm, and genuine.
+- Match their texting style and vibe (casual, friendly).
+- NEVER use robotic canned templates (e.g. "On it — give me a moment", "Sure thing, I'll look into it", "Certainly!").
+- Never repeat canned phrases.
+- Language: ${detectedLanguage}.`;
 
         const currentMsg = body.trim();
         const historyWithoutCurrent = formattedMessages.filter((h, i) => !(i === formattedMessages.length - 1 && h.role === 'user' && h.content === currentMsg));
         const messagesForAI = [...historyWithoutCurrent.slice(-10), { role: 'user', content: currentMsg }];
 
         const reply = await getAIResponse(messagesForAI, systemPrompt);
-        const naturalFallbacks = ['Got it, let me check on that for you.', "Sure thing, I'll look into it.", 'On it — give me a moment.'];
+        const naturalFallbacks = isFirstAssistantReply
+          ? ["Hey! I'm Francisco's personal assistant — how's everything going?", "Hi! I'm Mr. Cisco, Francisco's personal assistant. How can I help you?"]
+          : ['Haha got you! 😉', 'Sounds good!', 'All good! 👍', 'Cool!'];
         const finalReply = reply || naturalFallbacks[Math.floor(Math.random() * naturalFallbacks.length)];
 
         await supabase.from('chat_messages').insert({
@@ -351,34 +382,23 @@ async function getAIResponse(messagesInput, systemPrompt) {
   if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
   if (Array.isArray(messagesInput)) messages.push(...messagesInput.filter((m) => m.content && m.content.trim()));
 
-  const groqKey = process.env.GROQ_API_KEY || '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';
+  const groqKey = process.env.GROQ_API_KEY;
   try {
     const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${groqKey}` },
-      body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages, max_tokens: 300, temperature: 0.9 })
+      body: JSON.stringify({ model: 'qwen/qwen3.8-27b', messages, max_tokens: 250, temperature: 0.85 })
     });
     if (res.ok) {
       const data = await res.json();
       const text = data?.choices?.[0]?.message?.content?.trim();
       if (text) return text;
+    } else {
+      const errText = await res.text();
+      console.error('Groq returned error:', res.status, errText);
     }
   } catch (e) { console.error('Groq failed:', e.message); }
 
-  const geminiKey = process.env.GEMINI_API_KEY;
-  if (geminiKey) {
-    try {
-      const res = await fetch('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${geminiKey}` },
-        body: JSON.stringify({ model: 'gemini-2.0-flash', messages, max_tokens: 300, temperature: 0.9 })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        return data?.choices?.[0]?.message?.content?.trim() || null;
-      }
-    } catch (e) { console.error('Gemini failed:', e.message); }
-  }
   return null;
 }
 
