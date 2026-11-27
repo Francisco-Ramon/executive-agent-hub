@@ -49,7 +49,8 @@ if (!fs.existsSync(SESSION_DIR)) {
 
 // Supabase Setup
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://mvuvelhinkrplfpnroth.supabase.co';
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im12dXZlbGhpbmtycGxmcG5yb3RoIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5NTcxMjEwMiwiZXhwIjoyMTExMjg4MTAyfQ.cQptTpuIcAIti6OrDMSpERbcH31OlmsYJfZ3HG3xO3Q';
+const VALID_JWT_SERVICE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im12dXZlbGhpbmtycGxmcG5yb3RoIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5NTcxMjEwMiwiZXhwIjoyMTExMjg4MTAyfQ.cQptTpuIcAIti6OrDMSpERbcH31OlmsYJfZ3HG3xO3Q';
+const SUPABASE_SERVICE_ROLE_KEY = (process.env.SUPABASE_SERVICE_ROLE_KEY && process.env.SUPABASE_SERVICE_ROLE_KEY.startsWith('eyJ')) ? process.env.SUPABASE_SERVICE_ROLE_KEY : VALID_JWT_SERVICE_KEY;
 const DEFAULT_USER_ID = process.env.DEFAULT_USER_ID || '73573af4-8770-4571-a442-61eabfd21f15';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
