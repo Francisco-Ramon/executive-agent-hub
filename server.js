@@ -1,5 +1,14 @@
 // server.js - Multi-Tenant Pure Baileys WhatsApp Server with Multi-Language AI Brain
 import dotenv from 'dotenv';
+import {
+  INTENT_TYPES,
+  extractWorkingMemory,
+  classifyIntent,
+  buildCognitivePrompt,
+  executeMultiModelCall,
+  validateResponse,
+  getIntelligentFallback
+} from './conversation-engine.js';
 import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
@@ -306,7 +315,7 @@ async function initBaileysClient(userId) {
         }
 
         const { data: profile } = await supabase.from('profiles').select('display_name').eq('id', userId).maybeSingle();
-        const ownerName = profile?.display_name || 'the owner';
+        const ownerName = profile?.display_name || 'Francisco';
 
         const { data: history } = await supabase.from('chat_messages').select('role, content').eq('conversation_id', conversationId).order('created_at', { ascending: true }).limit(50);
         const formattedMessages = (history ?? []).map((h) => ({ role: h.role === 'assistant' ? 'assistant' : 'user', content: h.content }));
@@ -316,42 +325,66 @@ async function initBaileysClient(userId) {
         const assistantMsgCount = (history ?? []).filter((h) => h.role === 'assistant').length;
         const isFirstAssistantReply = assistantMsgCount === 0;
 
+        // Stage 1: Extract Working Memory & Topic Context
+        const workingMemory = extractWorkingMemory(formattedMessages, body);
+
+        // Stage 2: Intent Classification & Contextual Short-Message Resolution
+        const intentData = classifyIntent(body, workingMemory, formattedMessages);
+        console.log(`🧠 [User ${userId}] Intent: ${intentData.intent} | Topic: ${workingMemory.currentTopic} | Mood: ${workingMemory.userMood}`);
+
         const { data: kbPref } = await supabase.from('preferences').select('value').eq('user_id', userId).eq('key', 'business_knowledge_base').maybeSingle();
         const kb = kbPref?.value;
         const businessKnowledge = kb ? `\n=== BUSINESS KNOWLEDGE BASE ===\nCompany Name: ${kb.companyName || ownerName}\nAI Tone: ${kb.persona || 'Friendly & Professional'}\nServices: ${kb.description || ''}\nFAQs & Pricing:\n${kb.faqs || ''}\n=================================\n` : '';
 
-        const systemPrompt = `You are Mr. Cisco, the dedicated AI personal assistant to Francisco (Mr. Cisco).
-You are managing Francisco's WhatsApp on his behalf while he is occupied with meetings and business.
-
-YOUR IDENTITY:
-- Your name is "Mr. Cisco".
-- You are Francisco's personal assistant (AI).
-- You are NOT Francisco himself. NEVER pretend to be Francisco. NEVER say "I am Francisco" or "You're speaking to him".
-- If someone asks: "Can I speak to Francisco?", "Where is Francisco?", or asks if you are his assistant or him:
-  Be totally honest, warm, and natural: explain that you are his personal assistant managing his chats while he is tied up, and ask how you can help or offer to take a message for Francisco.
-- If it's urgent or they want Francisco directly: offer to pass an urgent note to Francisco right away.
-
-${isFirstAssistantReply ? `IMPORTANT (FIRST TEXT ONLY):
-This is your first message in this conversation. Introduce yourself warmly as Mr. Cisco, Francisco's personal assistant (e.g. "Hey! I'm Mr. Cisco, Francisco's personal assistant — how's it going?").` : `IMPORTANT:
-You have ALREADY introduced yourself earlier. DO NOT introduce yourself again. Just chat naturally and directly.`}
-
-CONVERSATION RULES:
-- Go with the natural flow of the conversation. Respond directly and intelligently to what they just said.
-- Sound like a real, smart human texting on WhatsApp — casual, relaxed, warm, friendly, witty.
-- Keep replies brief and conversational (1-2 short sentences max), exactly like real texting.
-- NEVER send robotic customer support templates ("How may I assist you today?", "Certainly!", "On it — give me a moment").
-- NEVER send empty acknowledgments ("All good! 👍", "Cool!", "Haha got you! 😉").
-- Always reply in ${detectedLanguage}.`;
+        // Stage 3: Build Cognitive System Prompt
+        const cognitiveSystemPrompt = buildCognitivePrompt({
+          detectedLanguage,
+          isFirstAssistantReply,
+          contactName: contactName || fromPhone,
+          workingMemory,
+          intentData,
+          businessKnowledge,
+          ownerName
+        });
 
         const currentMsg = body.trim();
         const historyWithoutCurrent = formattedMessages.filter((h, i) => !(i === formattedMessages.length - 1 && h.role === 'user' && h.content === currentMsg));
-        const messagesForAI = [...historyWithoutCurrent.slice(-10), { role: 'user', content: currentMsg }];
+        const messagesForAI = [...historyWithoutCurrent.slice(-14), { role: 'user', content: currentMsg }];
 
-        const reply = await getAIResponse(messagesForAI, systemPrompt);
-        const naturalFallbacks = isFirstAssistantReply
-          ? ["Hey! I'm Mr. Cisco, Francisco's personal assistant — how's everything going?"]
-          : ["Hey! Francisco is tied up right now, but I can pass a note to him for you. What would you like me to tell him?"];
-        const finalReply = reply || naturalFallbacks[Math.floor(Math.random() * naturalFallbacks.length)];
+        // Stage 4: Multi-Model Orchestration with Failover
+        const groqKey = process.env.GROQ_API_KEY;
+        const executionResult = await executeMultiModelCall(
+          [{ role: 'system', content: cognitiveSystemPrompt }, ...messagesForAI],
+          groqKey
+        );
+
+        let candidateReply = executionResult?.text || null;
+
+        // Stage 5: Response Quality Critic & Safety Validator
+        const recentAssistantMessages = formattedMessages
+          .filter(m => m.role === 'assistant')
+          .slice(-3)
+          .map(m => m.content);
+
+        const validation = validateResponse(candidateReply, intentData, workingMemory, recentAssistantMessages);
+        let finalReply;
+
+        if (validation.valid) {
+          finalReply = validation.text;
+        } else {
+          console.warn(`⚠️ Candidate response rejected: ${validation.reason}. Generating targeted correction...`);
+          const correctionPrompt = `${cognitiveSystemPrompt}\n\nCORRECTION REQUIRED: Your previous attempt was rejected because: "${validation.reason}". Provide a natural, direct, context-aware 1-2 sentence response without any canned phrases.`;
+          const correctedResult = await executeMultiModelCall(
+            [{ role: 'system', content: correctionPrompt }, ...messagesForAI],
+            groqKey,
+            ['openai/gpt-oss-120b', 'qwen/qwen3.8-27b']
+          );
+          if (correctedResult?.text) {
+            finalReply = correctedResult.text;
+          } else {
+            finalReply = getIntelligentFallback(intentData, workingMemory, isFirstAssistantReply, ownerName);
+          }
+        }
 
         await supabase.from('chat_messages').insert({
           user_id: userId, conversation_id: conversationId, role: 'assistant', content: finalReply, channel: 'whatsapp', metadata: { whatsapp_phone: fromPhone, whatsapp_jid: fromJid }
@@ -391,34 +424,6 @@ function detectLanguage(text) {
   return 'English';
 }
 
-async function getAIResponse(messagesInput, systemPrompt) {
-  const messages = [];
-  if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
-  if (Array.isArray(messagesInput)) messages.push(...messagesInput.filter((m) => m.content && m.content.trim()));
-
-  const groqKey = process.env.GROQ_API_KEY;
-  const models = ['qwen/qwen3.8-27b', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'];
-
-  for (const model of models) {
-    try {
-      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${groqKey}` },
-        body: JSON.stringify({ model, messages, max_tokens: 250, temperature: 0.75 })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const text = data?.choices?.[0]?.message?.content?.trim();
-        if (text) return text;
-      } else {
-        const errText = await res.text();
-        console.warn(`Groq model ${model} returned error:`, res.status, errText);
-      }
-    } catch (e) { console.warn(`Groq model ${model} failed:`, e.message); }
-  }
-
-  return null;
-}
 
 app.listen(API_PORT, '0.0.0.0', () => {
   console.log(`🌐 Baileys WhatsApp Server listening on http://0.0.0.0:${API_PORT}`);

@@ -24,8 +24,8 @@ COPY package*.json ./
 # Install only production dependencies needed for the bot
 RUN npm install --omit=dev 2>/dev/null || npm install
 
-# Copy the bot server, credentials, and .env
-COPY server.js ./
+# Copy the bot server, cognitive engine, credentials, and .env
+COPY server.js conversation-engine.js ./
 COPY .env* ./
 COPY .baileys_auth ./.baileys_auth
 
